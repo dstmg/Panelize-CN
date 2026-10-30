@@ -1,0 +1,12 @@
+node_modules/
+.env*
+*.pem
+*.crx
+*.zip
+dist/
+coverage/
+test-results/
+playwright-report/
+*.log
+user-data/
+test-profiles/

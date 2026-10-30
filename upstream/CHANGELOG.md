@@ -1,0 +1,69 @@
+# Changelog
+
+## 2.0.1 - 2026-10-23
+- The extension name and summary now describe what Panelize does, in all 10 supported languages.
+
+## 2.0.0 - 2026-10-22
+- Added Share: turn your comparison into an image to copy or download, with the prompt as an editable title. Choose Current view, or Full answers to stitch each answer from your latest prompt down.
+- Provider pages wider than their panel (such as Kimi, Qwen and Zhipu in narrow layouts) are now scaled down to fit instead of being cut off.
+- Resize panel columns by dragging their edges or with the arrow keys. Widths are remembered per layout, and a double-click resets them.
+- Added a one-time prompt asking engaged users to rate Panelize on the Chrome Web Store, with Later and Never options.
+
+## 1.3.3 - 2026-10-16
+- Fixed Grok conversations failing to start in panels by forwarding your existing grok.com session to Grok inside the Multi-Panel page.
+- Fixed Grok cookie consent choices not being saved inside panels.
+- Fixed Qwen Global staying signed out in panels. Existing Qwen Global users need to approve the additional qwen.ai access once in Settings.
+
+## 1.3.2 - 2026-10-02
+- Fixed New Chat for All opening a citation link in Claude answers instead of starting a new chat.
+
+## 1.3.1 - 2026-09-29
+- Fixed Send All, Enter to send and focus toggle for the current ChatGPT composer.
+- Fixed the next Enter after an image fill sending from only one panel instead of all of them.
+- Fixed a click into a panel sometimes being pulled back to the unified input after Send All.
+
+## 1.3.0 - 2026-09-24
+- Added Tencent Yuanbao as an optional provider with text fill, Enter to send, new chat, image upload and temporary chat.
+- Fixed Send All and New Chat for DeepSeek with its current site controls.
+- Fixed New Chat for All on Doubao and Qwen with their current site controls.
+- Fixed the first click into a panel being pulled back to the unified input right after Send All.
+- Fixed image fill for Kimi and Google AI Mode with their current upload controls.
+
+## 1.2.9 - 2026-09-22
+- Fix Doubao text injection for the current TipTap/ProseMirror composer.
+
+## 1.2.8 - 2026-07-19
+- Fix Gemini Send All in localized interfaces without affecting image uploads.
+
+## 1.2.7 - 2026-07-17
+- Removed the experimental Claude model override now that Claude provides native model selection when embedded.
+- Added upgrade cleanup and regression coverage for the retired Claude model preference.
+
+## 1.2.6 - 2026-07-17
+- Fixed update checks for GitHub-installed extensions using GitHub Releases.
+- Added a guarded release workflow that publishes only after the release branch is merged into main.
+
+## 1.1.1 - 2026-04-13
+- Fixed: New Chat for All now preserves temporary chat mode for supported providers.
+- Fixed: Gemini and Grok temporary or private chat activation no longer toggles off when already active.
+- Fixed: Grok private new-chat detection now avoids offscreen controls in narrow layouts.
+
+## 1.1.0 - 2026-04-07
+- Added: One-click temporary chat toggle for supported providers in multi-panel. (#39)
+- Added: Global Google mode sync with AI/Search mode switching and repeat send/fill fixes. (#37)
+- Fixed: Unified input focus retention after `New Chat for All` and `Send All`. (#36, #38)
+- Fixed: Focus trap caused by iframe loading state leaking during multi-panel interactions. (#39)
+
+## 1.0.3 - 2026-03-05
+- Fixed: Enter key on standalone Gemini page now works correctly (no longer triggers sidebar menu). (#35)
+- Fixed: IME composition Enter key sending message prematurely in multi-panel. (#31)
+- Docs: Added zh-CN and ja READMEs with updated store link. (#30)
+
+## 1.0.0 - 2026-02-03
+- Multi-panel workspace with flexible layouts up to 1x7.
+- Unified input bar to send or fill prompts across all panels.
+- Prompt library with import/export, tagging, and variable templates.
+- Provider management and per-provider Enter key behavior.
+- Context menu send with optional local page content extraction.
+- Multilingual UI (10 languages).
+- Update checks via GitHub.

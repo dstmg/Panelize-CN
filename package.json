@@ -1,0 +1,23 @@
+{
+  "name": "panelize-cn",
+  "version": "2.0.7",
+  "description": "多 AI 回答对比台：差异分析、我的收藏与本地记录",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dstmg/Panelize-CN.git"
+  },
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "release:package": "python scripts/package.py"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@vitest/ui": "^3.2.4",
+    "happy-dom": "^20.14.5",
+    "vitest": "^3.2.4",
+    "web-ext": "^9.0.0"
+  }
+}

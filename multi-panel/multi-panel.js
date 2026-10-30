@@ -1,0 +1,3703 @@
+import { getPersonalPrompts } from '../modules/my-prompts.js';
+/**
+ * Multi-Panel AI Comparison - Main JavaScript
+ *
+ * This module implements the multi-panel AI comparison feature,
+ * allowing users to compare responses from multiple AI providers side by side.
+ */
+
+import { initializeComparison } from '../modules/comparison-ui.js';
+import { initializeCnControls, syncCnControls, sortDomesticProviders, noteProviderUse, broadcastCn } from '../modules/cn-controls.js';
+import { PROVIDERS, getProviderById, getEnabledProviders, getProviderIcon } from '../modules/providers.js';
+import { selectStartupPanels } from '../modules/panel-startup.js';
+import { DEFAULT_PROVIDER_IDS } from '../modules/provider-defaults.js';
+import { GROK_WEBSOCKET_COOKIE_SYNC_ACTION } from '../modules/grok-websocket-cookies.js';
+import {
+  DEFAULT_GOOGLE_PROVIDER_MODE,
+  GOOGLE_PROVIDER_MODE_AI,
+  GOOGLE_PROVIDER_MODE_SEARCH,
+  getGoogleProviderUrl,
+  normalizeGoogleProviderMode
+} from '../modules/google-mode.js';
+import {
+  getProviderOpenUrl,
+  isProviderAllowedUrl,
+  isProviderCurrentUrl
+} from '../modules/provider-open-url.js';
+import { getSetting, saveSetting } from '../modules/settings.js';
+import {
+  LAYOUT_PANEL_COUNTS,
+  getAutoAdjustedLayout,
+  getAutoShrunkLayout
+} from '../modules/layout-auto-adjust.js';
+import { applyTheme } from '../modules/theme-manager.js';
+import { t, initializeLanguage, translatePage, getTranslationLocale } from '../modules/i18n.js';
+import {
+  RATING_PROMPT_ACTIONS,
+  RATING_PROMPT_REVIEW_URL,
+  countSuccessfulSend,
+  loadRatingPromptState,
+  saveRatingPromptAction,
+  shouldShowRatingPrompt
+} from '../modules/rating-prompt.js';
+import {
+  SNAPSHOT_MAX_PROMPT_LINES,
+  SNAPSHOT_MAX_SUBLINE_LINES,
+  composeSnapshot,
+  formatProviderList,
+  formatSnapshotSubline,
+  getSnapshotFileName,
+  getSnapshotFrameChromeHeight,
+  normalizePromptText,
+  toLanguageTag
+} from '../modules/share-snapshot.js';
+import {
+  TAB_CAPTURE_ERRORS,
+  TAB_CAPTURE_KINDS,
+  TabCaptureError,
+  openTabCaptureSource
+} from '../modules/tab-capture.js';
+import {
+  SNAPSHOT_MODES,
+  SnapshotCancelledError,
+  SnapshotLayoutChangedError,
+  captureCurrentView,
+  captureFullAnswers
+} from '../modules/snapshot-capture.js';
+import { SHARE_SNAPSHOT_ACTION, getExecuteActionShortcut } from '../modules/share-trigger.js';
+import {
+  calculatePendingImageIds,
+  cleanStalePanelRetryState,
+  createBroadcastGate,
+  createPanelActionResultWaiter,
+  determinePanelMessageType,
+  getFillTargetPanels,
+  getPanelActionResultTimeoutMs,
+  getPanelBroadcastActionParams,
+  normalizePanelResults,
+  normalizeSucceededImageIds,
+  shouldClearFillPayload,
+  summarizeFillResults
+} from '../modules/panel-action-results.js';
+import {
+  getAllPrompts,
+  searchPrompts,
+  recordPromptUsage,
+  getRecentlyUsedPrompts,
+  getFavoritePrompts,
+  savePrompt,
+  updatePrompt,
+  deletePrompt,
+  getPrompt
+} from '../modules/prompt-manager.js';
+import {
+  applyPanelFitScale,
+  createPanelFitState,
+  getPanelFitScale,
+  updatePanelFitState
+} from '../modules/panel-fit.js';
+import { setupPanelResize } from '../modules/panel-resize.js';
+import { createPointerGuard, createPointerTracker } from '../modules/pointer-guard.js';
+
+
+// ===== State Management =====
+let currentLayout = '1x2';
+let restoringPanels = false;
+let panels = []; // Array of { id, providerId, iframe, state }
+// Re-fits pages when their panel changes width (window, layout or drag).
+const panelFitObserver = typeof ResizeObserver === 'function'
+  ? new ResizeObserver((entries) => {
+    entries.forEach(({ target }) => {
+      const panel = panels.find(candidate => candidate.iframe?.parentElement === target);
+      if (panel) {
+        updatePanelFit(panel);
+      }
+    });
+  })
+  : null;
+let uploadedImages = []; // Array of uploaded images { id, name, type, dataUrl }
+let failedFillPanelIds = new Set();
+let pendingFillImageIdsByPanel = new Map();
+const broadcastGate = createBroadcastGate();
+let fillActionRequestCounter = 0;
+let fillPayloadRevision = 0;
+let loadingPanelIds = new Set(); // Track iframes still loading, used for focus protection
+let newChatFocusRestoreTimerIds = [];
+let focusRestoreGeneration = 0; // Bumped on every cancel so queued refocus frames are dropped
+let isRestoringFocusAfterNewChat = false;
+let sendFocusRestoreTimerIds = [];
+let isRestoringFocusAfterSend = false;
+let activeSendFocusRequestId = null;
+let sendFocusRequestCounter = 0;
+let sendFocusActivePanelIds = new Set();
+let sendFocusFillingPanelIds = new Set(); // Panels still running the fill that started the restore
+let sendFocusBusyDetectionTimeoutIds = new Map();
+let sendFocusHardTimeoutIds = new Map();
+let tempChatRetryTimerIds = new Map();
+let tempChatCleanupTimerId = null;
+let tempChatPendingPanelIds = new Set();
+let tempChatButtonRestoreTimerId = null;
+let isTemporaryChatModeEnabled = false;
+
+function getThemeAwareProviderIcon(provider) {
+  return getProviderIcon(provider);
+}
+
+function isDarkThemeActive() {
+  return document.documentElement.getAttribute('data-theme') === 'dark';
+}
+
+function getDropdownThemePalette() {
+  if (isDarkThemeActive()) {
+    return {
+      menuBackground: '#2d2d2d',
+      menuBorder: '#444',
+      menuText: '#e0e0e0',
+      itemHoverBackground: '#3a3a3a',
+      selectedBackground: '#1a3a5a',
+      selectedText: '#64b5f6'
+    };
+  }
+
+  return {
+    menuBackground: 'white',
+    menuBorder: '#e0e0e0',
+    menuText: '#333',
+    itemHoverBackground: '#f5f5f5',
+    selectedBackground: '#e3f2fd',
+    selectedText: '#1976d2'
+  };
+}
+
+function getLocalizedText(key, fallback, substitutions = null) {
+  const message = t(key, substitutions);
+  const fallbackValues = substitutions === null
+    ? []
+    : (Array.isArray(substitutions) ? substitutions : [substitutions]);
+  const resolvedFallback = fallbackValues.reduce(
+    (text, value, index) => text.replaceAll(`$${index + 1}`, value),
+    fallback
+  );
+  return message && message !== key ? message : resolvedFallback;
+}
+
+function refreshThemeAwareProviderIcons() {
+  document.querySelectorAll('img[data-provider-id]').forEach((img) => {
+    const provider = getProviderById(img.dataset.providerId);
+    if (!provider) return;
+    img.src = getThemeAwareProviderIcon(provider);
+  });
+}
+let currentGoogleProviderMode = DEFAULT_GOOGLE_PROVIDER_MODE;
+
+// 提示词编辑器状态
+let currentEditingPromptId = null;
+
+// 打开模式状态
+let currentOpenMode = 'tab'; // 'tab' 或 'popup'
+let isPopupWindow = false;   // 当前窗口是否为弹出窗口
+
+// Default panel configuration
+const DEFAULT_PROVIDERS = DEFAULT_PROVIDER_IDS;
+const MAX_PANELS = 12;
+const PENDING_MULTI_PANEL_ACTION_KEY = 'pendingMultiPanelAction';
+const SEND_FOCUS_RESTORE_DELAYS = [0, 80, 200, 400, 800, 1500, 2500, 4000, 6000, 8000, 10000, 12000];
+const SEND_FOCUS_NO_BUSY_TIMEOUT_MS = 2000;
+const SEND_FOCUS_HARD_TIMEOUT_MS = 90000;
+const MULTI_PANEL_PROVIDER_STATUS_CONTEXT = 'multi-panel-provider-status';
+const PANELIZE_PROVIDER_BUSY = 'PANELIZE_PROVIDER_BUSY';
+const PANELIZE_PROVIDER_IDLE = 'PANELIZE_PROVIDER_IDLE';
+const PANELIZE_PROVIDER_USER_INTERACTION = 'PANELIZE_PROVIDER_USER_INTERACTION';
+const PANELIZE_TEMP_CHAT_ENABLED = 'PANELIZE_TEMP_CHAT_ENABLED';
+const PANELIZE_PROVIDER_LOCATION = 'PANELIZE_PROVIDER_LOCATION';
+const PANELIZE_PAGE_WIDTH = 'PANELIZE_PAGE_WIDTH';
+const TEMP_CHAT_RETRY_DELAYS = [1200, 2500, 4000];
+const TEMP_CHAT_OPERATION_TIMEOUT_MS = 5000;
+const TEMP_CHAT_SUPPORTED_PROVIDERS = new Set(['chatgpt', 'gemini', 'claude', 'grok', 'yuanbao']);
+const TEMP_CHAT_RETRY_PROVIDERS = new Set(['gemini', 'grok', 'yuanbao']);
+const TEMP_CHAT_URLS = {
+  chatgpt: 'https://chatgpt.com/?temporary-chat=true',
+  claude: 'https://claude.ai/new?incognito',
+  grok: 'https://grok.com/c#private'
+};
+const TEMP_CHAT_NORMAL_URLS = {
+  chatgpt: 'https://chatgpt.com/',
+  claude: 'https://claude.ai/new',
+  gemini: 'https://gemini.google.com/',
+  grok: 'https://grok.com/',
+  yuanbao: getProviderById('yuanbao').url
+};
+let isInitialized = false;
+
+function normalizeLayout(layout) {
+  if (LAYOUT_PANEL_COUNTS[layout]) {
+    return layout;
+  }
+  return '1x3';
+}
+
+// ===== Initialization =====
+async function init() {
+  document.addEventListener('panelize:themechange', refreshThemeAwareProviderIcons);
+  await applyTheme();
+  await initializeLanguage();
+  translatePage();
+  registerRuntimeMessageListener();
+  registerStorageChangeListener();
+
+  // Detect window type and load mode
+  await detectWindowType();
+
+  // Restore state if needed (after mode switch)
+  await restoreStateIfNeeded();
+
+  // Load saved settings
+  await loadSettings();
+
+  await setupPanelResize({
+    grid: document.getElementById('panel-grid'),
+    getLayout: () => currentLayout,
+    storage: chrome.storage.local,
+    label: t('panelResizeHandle')
+  });
+
+  // Initialize panels
+  await initializePanels();
+  const controlsApi = {
+    getPanels: () => panels,
+    getImages: () => uploadedImages,
+    providerMode: getPanelProviderMode,
+    toast: showToast,
+    remember: rememberSnapshotPrompt,
+    filled: () => { document.getElementById('unified-input').value = ''; resizeTextarea(); clearAllImages(); },
+    fill: async (panel, text, images, requestId, retry) => {
+      const waiter = createPanelActionResultWaiter({target:window,panel,requestId,expectedImageIds:images.map(i=>i.id),action:'fill',timeoutMs:getPanelActionResultTimeoutMs(images.length)});
+      panel.iframe.contentWindow.postMessage({type:'PANELIZE_CN_FILL',text,images,requestId,retry,context:'multi-panel',providerMode:getPanelProviderMode(panel)}, '*');
+      return waiter.promise;
+    }
+  };
+  await initializeCnControls(controlsApi);
+  initializeComparison({...controlsApi,name:panel=>getProviderById(panel.providerId)?.name||panel.providerId,question:()=>lastSnapshotPrompt});
+
+  // Setup event listeners
+  setupEventListeners();
+  setupRatingPrompt();
+  setupShareSnapshot();
+  updateTemporaryChatButtonState();
+  focusUnifiedInput({ force: true });
+
+  isInitialized = true;
+  await handlePendingMultiPanelAction();
+}
+
+function focusUnifiedInput({ force = false } = {}) {
+  const inputTextarea = document.getElementById('unified-input');
+  if (!inputTextarea) {
+    return;
+  }
+
+  const active = document.activeElement;
+  const shouldFocus = force || !active || active.tagName === 'IFRAME' || active === document.body;
+  if (!shouldFocus) {
+    return;
+  }
+
+  // A click into a panel can cancel the protection before this frame runs.
+  const generation = focusRestoreGeneration;
+  requestAnimationFrame(() => {
+    if (generation !== focusRestoreGeneration || (!force && !shouldPreserveUnifiedInputFocus())) {
+      return;
+    }
+    // The user moved on to a dialog, e.g. to edit a snapshot title.
+    if (isFocusInOpenModal()) {
+      return;
+    }
+    try {
+      inputTextarea.focus({ preventScroll: true });
+    } catch {
+      inputTextarea.focus();
+    }
+  });
+}
+
+function isFocusInOpenModal() {
+  const modal = document.activeElement?.closest?.('.modal');
+  return Boolean(modal) && modal.style.display !== 'none';
+}
+
+function shouldPreserveUnifiedInputFocus() {
+  return loadingPanelIds.size > 0 || isRestoringFocusAfterNewChat || isRestoringFocusAfterSend;
+}
+
+function isGoogleProvider(providerId) {
+  return providerId === 'google';
+}
+
+function isChatgptProvider(providerId) {
+  return providerId === 'chatgpt';
+}
+
+// The service worker owns the forwarding rule and serializes updates to it;
+// a failed sync must not block the panel from loading.
+async function requestGrokWebSocketCookieSync() {
+  try {
+    const response = await chrome.runtime.sendMessage({ action: GROK_WEBSOCKET_COOKIE_SYNC_ACTION });
+    if (!response?.success) {
+      console.warn('[Multi-Panel] Grok WebSocket cookie sync failed:', response?.error);
+    }
+  } catch (error) {
+    console.warn('[Multi-Panel] Grok WebSocket cookie sync failed:', error);
+  }
+}
+
+function isTemporaryChatSupportedProvider(providerId) {
+  return TEMP_CHAT_SUPPORTED_PROVIDERS.has(providerId);
+}
+
+function requiresTemporaryChatActivationRetry(providerId) {
+  return TEMP_CHAT_RETRY_PROVIDERS.has(providerId);
+}
+
+function isUrlDrivenTemporaryChatProvider(providerId) {
+  return Object.prototype.hasOwnProperty.call(TEMP_CHAT_URLS, providerId);
+}
+
+function getTemporaryChatUrl(providerId) {
+  return TEMP_CHAT_URLS[providerId] || null;
+}
+
+function getTemporaryChatNormalUrl(providerId) {
+  if (Object.prototype.hasOwnProperty.call(TEMP_CHAT_NORMAL_URLS, providerId)) {
+    return TEMP_CHAT_NORMAL_URLS[providerId];
+  }
+
+  const provider = getProviderById(providerId);
+  if (!provider) {
+    return '';
+  }
+
+  return isGoogleProvider(providerId)
+    ? getGoogleProviderUrl(currentGoogleProviderMode)
+    : provider.url;
+}
+
+function getPanelProviderMode(panel) {
+  return isGoogleProvider(panel.providerId) ? currentGoogleProviderMode : null;
+}
+
+function postNewChatToPanel(panel) {
+  if (!panel || !panel.iframe || !panel.iframe.contentWindow) {
+    return;
+  }
+
+  panel.iframe.contentWindow.postMessage({
+    type: 'NEW_CHAT',
+    providerMode: getPanelProviderMode(panel),
+    context: 'multi-panel'
+  }, '*');
+}
+
+function getProviderFrameUrl(providerId) {
+  const provider = getProviderById(providerId);
+  if (!provider) {
+    return '';
+  }
+
+  if (isTemporaryChatModeEnabled && isUrlDrivenTemporaryChatProvider(providerId)) {
+    return getTemporaryChatUrl(providerId);
+  }
+
+  return isGoogleProvider(providerId)
+    ? getGoogleProviderUrl(currentGoogleProviderMode)
+    : provider.url;
+}
+
+function getGoogleModeSelectHtml(mode = currentGoogleProviderMode) {
+  const normalizedMode = normalizeGoogleProviderMode(mode);
+  return `
+    <select class="panel-google-mode-select" title="Google mode">
+      <option value="${GOOGLE_PROVIDER_MODE_AI}" ${normalizedMode === GOOGLE_PROVIDER_MODE_AI ? 'selected' : ''}>AI Mode</option>
+      <option value="${GOOGLE_PROVIDER_MODE_SEARCH}" ${normalizedMode === GOOGLE_PROVIDER_MODE_SEARCH ? 'selected' : ''}>Search</option>
+    </select>
+  `;
+}
+
+function fitPanelSelectWidth(select) {
+  if (!(select instanceof HTMLSelectElement)) {
+    return;
+  }
+
+  const selectedOption = select.options[select.selectedIndex];
+  const text = selectedOption?.textContent || select.value || '';
+  const sizingProbe = document.createElement('span');
+  const computedStyle = window.getComputedStyle(select);
+
+  sizingProbe.textContent = text;
+  sizingProbe.style.position = 'absolute';
+  sizingProbe.style.visibility = 'hidden';
+  sizingProbe.style.whiteSpace = 'pre';
+  sizingProbe.style.font = computedStyle.font;
+  sizingProbe.style.fontSize = computedStyle.fontSize;
+  sizingProbe.style.fontWeight = computedStyle.fontWeight;
+  sizingProbe.style.letterSpacing = computedStyle.letterSpacing;
+
+  document.body.appendChild(sizingProbe);
+  const measuredWidth = Math.ceil(sizingProbe.getBoundingClientRect().width);
+  sizingProbe.remove();
+
+  const horizontalPadding = (parseFloat(computedStyle.paddingLeft) || 0) +
+    (parseFloat(computedStyle.paddingRight) || 0);
+  const horizontalBorder = (parseFloat(computedStyle.borderLeftWidth) || 0) +
+    (parseFloat(computedStyle.borderRightWidth) || 0);
+  const safetyAllowance = 6;
+
+  select.style.width = `${Math.max(
+    72,
+    Math.ceil(measuredWidth + horizontalPadding + horizontalBorder + safetyAllowance)
+  )}px`;
+}
+
+function getPanelHeaderRightHtml(providerId) {
+  const googleModeSelect = isGoogleProvider(providerId)
+    ? getGoogleModeSelectHtml()
+    : '';
+
+  const openTopLevelBtn = `<button class="open-provider-top-level-btn" title="${getLocalizedText('openProviderTopLevelTitle', 'Open in new tab')}">
+      <span class="material-symbols-outlined">open_in_new</span>
+    </button>`;
+
+  return `
+    ${googleModeSelect}
+    ${openTopLevelBtn}
+    <button class="refresh-panel-btn" title="刷新此平台">
+      <span class="material-symbols-outlined">refresh</span>
+    </button>
+    <button class="switch-provider-btn" title="切换 AI">
+      <span class="material-symbols-outlined">swap_horiz</span>
+    </button>
+  `;
+}
+
+function syncGoogleModeControls() {
+  document.querySelectorAll('.panel-google-mode-select').forEach((select) => {
+    if (select.value !== currentGoogleProviderMode) {
+      select.value = currentGoogleProviderMode;
+    }
+    fitPanelSelectWidth(select);
+  });
+}
+
+function showPanelLoadingState(panelEl, provider) {
+  const loadingEl = panelEl.querySelector('.panel-loading');
+  if (!loadingEl || !provider) {
+    return;
+  }
+
+  loadingEl.classList.remove('hidden');
+  loadingEl.innerHTML = `<img src="${getThemeAwareProviderIcon(provider)}" alt="${provider.name}" class="loading-icon" data-provider-id="${provider.id}"><span class="loading-text">正在加载 ${provider.name}…</span>`;
+}
+
+function reloadPanelIframe(panel, overrideUrl = null) {
+  const panelEl = document.getElementById(panel.id);
+  const provider = getProviderById(panel.providerId);
+  if (!panelEl || !provider) {
+    return;
+  }
+
+  const iframe = panelEl.querySelector('iframe');
+  if (!iframe) {
+    return;
+  }
+
+  showPanelLoadingState(panelEl, provider);
+  loadingPanelIds.add(panel.id);
+  panel.currentUrl = null;
+  iframe.src = overrideUrl || getProviderFrameUrl(panel.providerId);
+  panel.iframe = iframe;
+}
+
+async function openProviderTopLevel(panel) {
+  const provider = getProviderById(panel?.providerId);
+  if (!provider) {
+    return;
+  }
+
+  const url = getProviderOpenUrl(provider, panel.currentUrl, getPanelProviderMode(panel));
+
+  try {
+    if (typeof chrome !== 'undefined' && chrome.tabs?.create) {
+      await chrome.tabs.create({ url });
+      return;
+    }
+
+    window.open(url, '_blank', 'noopener');
+  } catch (error) {
+    console.error('Failed to open provider tab:', error);
+  }
+}
+
+function bindPanelHeaderActions(panelId) {
+  const panel = panels.find(p => p.id === panelId);
+  const panelEl = document.getElementById(panelId);
+  if (!panel || !panelEl) {
+    return;
+  }
+
+  const openTopLevelBtn = panelEl.querySelector('.open-provider-top-level-btn');
+  if (openTopLevelBtn) {
+    openTopLevelBtn.addEventListener('click', () => {
+      openProviderTopLevel(panel);
+    });
+  }
+
+  const refreshBtn = panelEl.querySelector('.refresh-panel-btn');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => {
+      reloadPanelIframe(panel);
+    });
+  }
+
+  const switchBtn = panelEl.querySelector('.switch-provider-btn');
+  if (switchBtn) {
+    switchBtn.addEventListener('click', () => {
+      showProviderSwitcher(panelId);
+    });
+  }
+
+  const googleModeSelect = panelEl.querySelector('.panel-google-mode-select');
+  if (googleModeSelect) {
+    fitPanelSelectWidth(googleModeSelect);
+    googleModeSelect.addEventListener('click', (event) => {
+      event.stopPropagation();
+    });
+    googleModeSelect.addEventListener('mousedown', (event) => {
+      event.stopPropagation();
+    });
+    googleModeSelect.addEventListener('change', async (event) => {
+      fitPanelSelectWidth(event.target);
+      await updateGoogleProviderMode(event.target.value, { persist: true, reloadPanels: true });
+    });
+  }
+}
+
+async function updateGoogleProviderMode(mode, { persist = false, reloadPanels = false } = {}) {
+  const normalizedMode = normalizeGoogleProviderMode(mode);
+  const modeChanged = currentGoogleProviderMode !== normalizedMode;
+  currentGoogleProviderMode = normalizedMode;
+  syncGoogleModeControls();
+
+  if (reloadPanels && modeChanged) {
+    panels
+      .filter(panel => isGoogleProvider(panel.providerId))
+      .forEach(panel => reloadPanelIframe(panel));
+  }
+
+  if (persist) {
+    await saveSetting('googleProviderMode', normalizedMode);
+  }
+}
+
+function registerStorageChangeListener() {
+  if (!chrome?.storage?.onChanged?.addListener) {
+    return;
+  }
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'sync' && areaName !== 'local') {
+      return;
+    }
+
+    if (changes.googleProviderMode?.newValue) {
+      const nextMode = normalizeGoogleProviderMode(changes.googleProviderMode.newValue);
+      if (nextMode === currentGoogleProviderMode) {
+        syncGoogleModeControls();
+      } else {
+        updateGoogleProviderMode(nextMode, { reloadPanels: true }).catch((error) => {
+          console.error('Error syncing Google provider mode:', error);
+        });
+      }
+    }
+  });
+}
+
+function cancelUnifiedInputFocusRestore() {
+  focusRestoreGeneration += 1;
+  newChatFocusRestoreTimerIds.forEach(timerId => clearTimeout(timerId));
+  newChatFocusRestoreTimerIds = [];
+  isRestoringFocusAfterNewChat = false;
+}
+
+function cancelUnifiedInputFocusRestoreAfterSend() {
+  focusRestoreGeneration += 1;
+  sendFocusRestoreTimerIds.forEach(timerId => clearTimeout(timerId));
+  sendFocusRestoreTimerIds = [];
+  sendFocusBusyDetectionTimeoutIds.forEach(timerId => clearTimeout(timerId));
+  sendFocusBusyDetectionTimeoutIds.clear();
+  sendFocusHardTimeoutIds.forEach(timerId => clearTimeout(timerId));
+  sendFocusHardTimeoutIds.clear();
+  sendFocusActivePanelIds.clear();
+  sendFocusFillingPanelIds.clear();
+  activeSendFocusRequestId = null;
+  isRestoringFocusAfterSend = false;
+}
+
+function setTemporaryChatButtonDisabled(disabled) {
+  const temporaryChatBtn = document.getElementById('temporary-chat-btn');
+  if (temporaryChatBtn) {
+    temporaryChatBtn.disabled = disabled;
+  }
+}
+
+function updateTemporaryChatButtonState() {
+  const temporaryChatBtn = document.getElementById('temporary-chat-btn');
+  if (!temporaryChatBtn) {
+    return;
+  }
+
+  temporaryChatBtn.classList.toggle('active', isTemporaryChatModeEnabled);
+  temporaryChatBtn.setAttribute('aria-pressed', isTemporaryChatModeEnabled ? 'true' : 'false');
+}
+
+function setTemporaryChatModeEnabled(enabled) {
+  isTemporaryChatModeEnabled = Boolean(enabled);
+  updateTemporaryChatButtonState();
+}
+
+function clearTemporaryChatButtonRestoreTimer() {
+  if (typeof tempChatButtonRestoreTimerId === 'number') {
+    clearTimeout(tempChatButtonRestoreTimerId);
+  }
+  tempChatButtonRestoreTimerId = null;
+}
+
+function scheduleTemporaryChatButtonRestore(delay = 1000) {
+  clearTemporaryChatButtonRestoreTimer();
+  tempChatButtonRestoreTimerId = setTimeout(() => {
+    tempChatButtonRestoreTimerId = null;
+    setTemporaryChatButtonDisabled(false);
+  }, delay);
+}
+
+function clearTemporaryChatRetriesForPanel(panelId) {
+  const timerIds = tempChatRetryTimerIds.get(panelId) || [];
+  timerIds.forEach(timerId => clearTimeout(timerId));
+  tempChatRetryTimerIds.delete(panelId);
+}
+
+function cancelTemporaryChatActivation({ restoreButton = true } = {}) {
+  tempChatRetryTimerIds.forEach((timerIds) => {
+    timerIds.forEach(timerId => clearTimeout(timerId));
+  });
+  tempChatRetryTimerIds.clear();
+  tempChatPendingPanelIds.clear();
+  clearTemporaryChatButtonRestoreTimer();
+
+  if (typeof tempChatCleanupTimerId === 'number') {
+    clearTimeout(tempChatCleanupTimerId);
+  }
+  tempChatCleanupTimerId = null;
+
+  if (restoreButton) {
+    setTemporaryChatButtonDisabled(false);
+  }
+}
+
+function startTemporaryChatActivationForPanel(panel) {
+  if (!panel || !requiresTemporaryChatActivationRetry(panel.providerId) || !panel.iframe || !panel.iframe.contentWindow) {
+    return;
+  }
+
+  clearTemporaryChatRetriesForPanel(panel.id);
+  tempChatPendingPanelIds.add(panel.id);
+  TEMP_CHAT_RETRY_DELAYS.forEach(delay => scheduleTemporaryChatRetry(panel, delay));
+}
+
+function startTemporaryChatActivationCycle() {
+  cancelTemporaryChatActivation({ restoreButton: false });
+  setTemporaryChatButtonDisabled(true);
+  scheduleTemporaryChatButtonRestore();
+  tempChatCleanupTimerId = setTimeout(() => {
+    cancelTemporaryChatActivation();
+  }, TEMP_CHAT_OPERATION_TIMEOUT_MS);
+}
+
+function startFreshChatForPanel(panel, options = {}) {
+  const preferInPageNewChat = options.preferInPageNewChat === true;
+
+  if (!panel) {
+    return;
+  }
+
+  if (!isTemporaryChatModeEnabled) {
+    postNewChatToPanel(panel);
+    return;
+  }
+
+  if (requiresTemporaryChatActivationRetry(panel.providerId) && !isUrlDrivenTemporaryChatProvider(panel.providerId)) {
+    postNewChatToPanel(panel);
+    startTemporaryChatActivationForPanel(panel);
+    return;
+  }
+
+  if (panel.providerId === 'grok' && preferInPageNewChat) {
+    postNewChatToPanel(panel);
+    startTemporaryChatActivationForPanel(panel);
+    return;
+  }
+
+  if (isUrlDrivenTemporaryChatProvider(panel.providerId)) {
+    reloadPanelIframe(panel, getTemporaryChatUrl(panel.providerId));
+    return;
+  }
+
+  postNewChatToPanel(panel);
+}
+
+function isUnifiedInputOrNewChatControl(target) {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  return Boolean(target.closest('#unified-input, #new-chat-btn, #temporary-chat-btn'));
+}
+
+function isUnifiedInputOrSendControl(target) {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  return Boolean(target.closest('#unified-input, #send-all-btn'));
+}
+
+function restoreUnifiedInputFocusAfterNewChat() {
+  cancelUnifiedInputFocusRestore();
+  isRestoringFocusAfterNewChat = true;
+
+  const restoreDelays = [0, 80, 200, 400, 800, 1000, 1200, 1500];
+  restoreDelays.forEach((delay, index) => {
+    const timerId = setTimeout(() => {
+      if (!isRestoringFocusAfterNewChat) {
+        return;
+      }
+
+      if (index === restoreDelays.length - 1) {
+        cancelUnifiedInputFocusRestore();
+      }
+
+      focusUnifiedInput({ force: true });
+    }, delay);
+
+    newChatFocusRestoreTimerIds.push(timerId);
+  });
+}
+
+function createSendFocusRequestId() {
+  sendFocusRequestCounter += 1;
+  return `send-focus-${Date.now()}-${sendFocusRequestCounter}`;
+}
+
+function clearSendFocusProviderTimeout(timeoutMap, panelId) {
+  const timerId = timeoutMap.get(panelId);
+  if (typeof timerId === 'number') {
+    clearTimeout(timerId);
+  }
+  timeoutMap.delete(panelId);
+}
+
+function maybeStopSendFocusRestore() {
+  if (sendFocusRestoreTimerIds.length > 0) {
+    return;
+  }
+
+  if (sendFocusActivePanelIds.size > 0 || sendFocusFillingPanelIds.size > 0) {
+    return;
+  }
+
+  cancelUnifiedInputFocusRestoreAfterSend();
+}
+
+function getChatgptPanelsWithFrames() {
+  return panels.filter(panel => (
+    isChatgptProvider(panel.providerId) &&
+    panel.iframe &&
+    panel.iframe.contentWindow
+  ));
+}
+
+function scheduleChatgptBusyDetectionTimeout(panel, requestId) {
+  clearSendFocusProviderTimeout(sendFocusBusyDetectionTimeoutIds, panel.id);
+
+  const timerId = setTimeout(() => {
+    if (activeSendFocusRequestId !== requestId) {
+      return;
+    }
+
+    sendFocusBusyDetectionTimeoutIds.delete(panel.id);
+  }, SEND_FOCUS_NO_BUSY_TIMEOUT_MS);
+
+  sendFocusBusyDetectionTimeoutIds.set(panel.id, timerId);
+}
+
+function scheduleChatgptHardTimeout(panelId, requestId) {
+  clearSendFocusProviderTimeout(sendFocusHardTimeoutIds, panelId);
+
+  const timerId = setTimeout(() => {
+    if (activeSendFocusRequestId !== requestId) {
+      return;
+    }
+
+    console.warn('[Multi-Panel] Releasing send focus protection after ChatGPT hard timeout:', panelId);
+    sendFocusActivePanelIds.delete(panelId);
+    sendFocusHardTimeoutIds.delete(panelId);
+    maybeStopSendFocusRestore();
+  }, SEND_FOCUS_HARD_TIMEOUT_MS);
+
+  sendFocusHardTimeoutIds.set(panelId, timerId);
+}
+
+function handleSendFocusProviderBusy(panel, requestId) {
+  if (activeSendFocusRequestId !== requestId) {
+    return;
+  }
+
+  clearSendFocusProviderTimeout(sendFocusBusyDetectionTimeoutIds, panel.id);
+  sendFocusActivePanelIds.add(panel.id);
+  isRestoringFocusAfterSend = true;
+  scheduleChatgptHardTimeout(panel.id, requestId);
+  focusUnifiedInput({ force: true });
+}
+
+function handleSendFocusProviderIdle(panel, requestId) {
+  if (activeSendFocusRequestId !== requestId) {
+    return;
+  }
+
+  clearSendFocusProviderTimeout(sendFocusBusyDetectionTimeoutIds, panel.id);
+  clearSendFocusProviderTimeout(sendFocusHardTimeoutIds, panel.id);
+  sendFocusActivePanelIds.delete(panel.id);
+  maybeStopSendFocusRestore();
+}
+
+function restoreUnifiedInputFocusAfterSend(trackedPanels = [], requestId = createSendFocusRequestId()) {
+  cancelUnifiedInputFocusRestoreAfterSend();
+  isRestoringFocusAfterSend = true;
+  activeSendFocusRequestId = requestId;
+
+  trackedPanels.forEach(panel => scheduleChatgptBusyDetectionTimeout(panel, activeSendFocusRequestId));
+
+  SEND_FOCUS_RESTORE_DELAYS.forEach((delay, index) => {
+    const timerId = setTimeout(() => {
+      if (!isRestoringFocusAfterSend || activeSendFocusRequestId !== requestId) {
+        return;
+      }
+
+      if (index === SEND_FOCUS_RESTORE_DELAYS.length - 1) {
+        sendFocusRestoreTimerIds = [];
+        maybeStopSendFocusRestore();
+      }
+
+      // After the stop above, so a finished restore still gets this frame.
+      focusUnifiedInput({ force: true });
+    }, delay);
+
+    sendFocusRestoreTimerIds.push(timerId);
+  });
+
+  return requestId;
+}
+
+function handleProviderStatusMessage(event) {
+  const data = event?.data;
+  if (!data || typeof data !== 'object') {
+    return;
+  }
+
+  const isTempChatMessage = data.type === PANELIZE_TEMP_CHAT_ENABLED;
+  const isLocationMessage = data.type === PANELIZE_PROVIDER_LOCATION;
+  const isPageWidthMessage = data.type === PANELIZE_PAGE_WIDTH;
+  if (data.context !== MULTI_PANEL_PROVIDER_STATUS_CONTEXT
+    || (!data.requestId && !isTempChatMessage && !isLocationMessage && !isPageWidthMessage)) {
+    return;
+  }
+
+  const panel = panels.find(candidate => candidate.iframe?.contentWindow === event.source);
+  if (!panel || data.provider !== panel.providerId) {
+    return;
+  }
+
+  switch (data.type) {
+    case PANELIZE_PROVIDER_LOCATION:
+      if (!isProviderAllowedUrl(panel.providerId, data.url)) {
+        return;
+      }
+      panel.currentUrl = isProviderCurrentUrl(panel.providerId, data.url) ? data.url : null;
+      break;
+    case PANELIZE_PAGE_WIDTH:
+      if (!Number.isFinite(data.neededWidth) || data.neededWidth < 0) {
+        return;
+      }
+      panel.pageNeededWidth = data.neededWidth;
+      updatePanelFit(panel);
+      break;
+    case PANELIZE_PROVIDER_BUSY:
+      if (!isChatgptProvider(panel.providerId)) {
+        return;
+      }
+      handleSendFocusProviderBusy(panel, data.requestId);
+      break;
+    case PANELIZE_PROVIDER_IDLE:
+      if (!isChatgptProvider(panel.providerId)) {
+        return;
+      }
+      handleSendFocusProviderIdle(panel, data.requestId);
+      break;
+    case PANELIZE_PROVIDER_USER_INTERACTION:
+      if (data.requestId === activeSendFocusRequestId) {
+        cancelUnifiedInputFocusRestoreAfterSend();
+        // The click that moved focus into the panel also blurred the unified
+        // input, and the restore pulled focus back before this message
+        // arrived. Return focus to the panel the user actually chose.
+        if (document.activeElement === document.getElementById('unified-input')) {
+          panel.iframe.focus();
+          panel.iframe.contentWindow?.postMessage({
+            type: 'PANELIZE_RESTORE_USER_FOCUS',
+            context: 'multi-panel'
+          }, '*');
+        }
+      }
+      break;
+    case PANELIZE_TEMP_CHAT_ENABLED:
+      if (!tempChatPendingPanelIds.has(panel.id)) {
+        return;
+      }
+      clearTemporaryChatRetriesForPanel(panel.id);
+      tempChatPendingPanelIds.delete(panel.id);
+      break;
+    default:
+      break;
+  }
+}
+
+async function getPendingMultiPanelAction() {
+  try {
+    const result = await chrome.storage.session.get(PENDING_MULTI_PANEL_ACTION_KEY);
+    if (result && result[PENDING_MULTI_PANEL_ACTION_KEY]) {
+      return result[PENDING_MULTI_PANEL_ACTION_KEY];
+    }
+  } catch (error) {
+    // Ignore session storage errors
+  }
+
+  try {
+    const result = await chrome.storage.local.get(PENDING_MULTI_PANEL_ACTION_KEY);
+    return result ? result[PENDING_MULTI_PANEL_ACTION_KEY] : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+async function clearPendingMultiPanelAction() {
+  try {
+    await chrome.storage.session.remove(PENDING_MULTI_PANEL_ACTION_KEY);
+  } catch (error) {
+    // Ignore session storage errors
+  }
+
+  try {
+    await chrome.storage.local.remove(PENDING_MULTI_PANEL_ACTION_KEY);
+  } catch (error) {
+    // Ignore local storage errors
+  }
+}
+
+async function handlePendingMultiPanelAction() {
+  const pendingAction = await getPendingMultiPanelAction();
+  if (!pendingAction || !pendingAction.action) {
+    return;
+  }
+
+  const handled = await handleMultiPanelAction(pendingAction.action, pendingAction.payload || {});
+  if (handled) {
+    await clearPendingMultiPanelAction();
+  }
+}
+
+async function handleMultiPanelAction(action, payload = {}) {
+  if (action === 'openPromptLibrary') {
+    if (payload.selectedText) {
+      applyPromptToInput(payload.selectedText);
+    }
+    openPromptModal();
+    return true;
+  }
+
+  if (action === 'sendToPanel') {
+    if (payload.selectedText) {
+      applyPromptToInput(payload.selectedText);
+    }
+    return true;
+  }
+
+  if (action === 'switchProvider') {
+    if (payload.providerId && panels.length > 0) {
+      await switchPanelProvider(panels[0].id, payload.providerId);
+    }
+    if (payload.selectedText) {
+      applyPromptToInput(payload.selectedText);
+    }
+    return true;
+  }
+
+  return false;
+}
+
+function registerRuntimeMessageListener() {
+  if (!chrome?.runtime?.onMessage) return;
+
+  chrome.runtime.onMessage.addListener((message) => {
+    if (!message?.action || !isInitialized) {
+      return;
+    }
+
+    if (message.action === SHARE_SNAPSHOT_ACTION) {
+      handleShareSnapshotRequest(message.payload || {});
+      return;
+    }
+
+    handleMultiPanelAction(message.action, message.payload || {}).then((handled) => {
+      if (handled) {
+        clearPendingMultiPanelAction();
+      }
+    });
+  });
+}
+
+async function loadSettings() {
+  try {
+    const settings = await chrome.storage.sync.get({
+      multiPanelLayout: '1x2',
+      multiPanelProviders: ['deepseek', 'doubao'],
+      openMode: 'tab',
+      googleProviderMode: DEFAULT_GOOGLE_PROVIDER_MODE
+    });
+
+    currentLayout = normalizeLayout(settings.multiPanelLayout);
+    currentOpenMode = settings.openMode || 'tab';
+    currentGoogleProviderMode = normalizeGoogleProviderMode(settings.googleProviderMode);
+
+    // Apply layout
+    const panelGrid = document.getElementById('panel-grid');
+    panelGrid.className = `layout-${currentLayout}`;
+  } catch (error) {
+    console.error('Error loading settings:', error);
+  }
+}
+
+// ===== Open Mode Management =====
+async function detectWindowType() {
+  try {
+    const currentWindow = await chrome.windows.getCurrent();
+    // popup 类型的窗口 type 为 'popup'
+    isPopupWindow = currentWindow.type === 'popup';
+
+    // 读取设置中的模式
+    const settings = await chrome.storage.sync.get({ openMode: 'tab' });
+    currentOpenMode = settings.openMode;
+
+    updateToggleButton();
+  } catch (error) {
+    console.error('Error detecting window type:', error);
+  }
+}
+
+function updateToggleButton() {
+  const btn = document.getElementById('toggle-open-mode-btn');
+  if (!btn) return;
+
+  const icon = btn.querySelector('.material-symbols-outlined');
+  const text = btn.querySelector('.btn-text');
+
+  if (isPopupWindow) {
+    // 当前是弹出窗口，提示可以切换到标签页
+    icon.textContent = 'tab';
+    text.textContent = t('switchToTabMode') || 'Tab Mode';
+    btn.title = t('switchToTabModeTitle') || 'Switch to Tab Mode';
+  } else {
+    // 当前是标签页，提示可以切换到弹出窗口
+    icon.textContent = 'open_in_new';
+    text.textContent = t('switchToPopupMode') || 'Popup Mode';
+    btn.title = t('switchToPopupModeTitle') || 'Switch to Popup Mode';
+  }
+}
+
+function collectCurrentState() {
+  const state = {
+    inputText: document.getElementById('unified-input')?.value || '',
+    uploadedImages: [...uploadedImages],
+    currentLayout: currentLayout,
+    panels: panels.map(p => ({
+      providerId: p.providerId
+    })),
+    googleProviderMode: currentGoogleProviderMode,
+    timestamp: Date.now()
+  };
+  return state;
+}
+
+async function toggleOpenMode() {
+  // 1. 收集当前状态
+  const state = collectCurrentState();
+
+  // 2. 保存状态到 storage（临时）
+  try {
+    await chrome.storage.session.set({
+      preservedState: state
+    });
+  } catch (error) {
+    console.error('Error saving state:', error);
+    // Fallback to local storage if session storage fails
+    await chrome.storage.local.set({
+      preservedState: state
+    });
+  }
+
+  // 3. 切换设置
+  const newMode = isPopupWindow ? 'tab' : 'popup';
+  await chrome.storage.sync.set({ openMode: newMode });
+
+  // 4. 在新模式下打开
+  const multiPanelUrl = chrome.runtime.getURL('multi-panel/multi-panel.html');
+
+  if (isPopupWindow) {
+    // 从弹出窗口切换到标签页：创建新标签页，关闭当前窗口
+    await chrome.tabs.create({ url: multiPanelUrl, active: true });
+    window.close(); // 关闭当前弹出窗口
+  } else {
+    // 从标签页切换到弹出窗口：创建弹出窗口，关闭当前标签页
+    await chrome.windows.create({
+      url: multiPanelUrl,
+      type: 'popup',
+      width: 1400,
+      height: 900
+    });
+    // 获取当前标签页并关闭
+    const currentTab = await chrome.tabs.getCurrent();
+    if (currentTab) {
+      await chrome.tabs.remove(currentTab.id);
+    }
+  }
+}
+
+async function restoreStateIfNeeded() {
+  try {
+    // Try session storage first, then local storage
+    let result = await chrome.storage.session.get('preservedState');
+    if (!result.preservedState) {
+      result = await chrome.storage.local.get('preservedState');
+    }
+
+    if (result.preservedState) {
+      const state = result.preservedState;
+
+      // 恢复输入文本
+      const input = document.getElementById('unified-input');
+      if (input && state.inputText) {
+        input.value = state.inputText;
+        // Trigger resize to adjust textarea height
+        resizeTextarea();
+      }
+
+      // 恢复图片
+      if (state.uploadedImages && state.uploadedImages.length > 0) {
+        uploadedImages = state.uploadedImages;
+        renderImagePreviews();
+      }
+
+      // 恢复布局
+      if (state.currentLayout) {
+        currentLayout = normalizeLayout(state.currentLayout);
+        const panelGrid = document.getElementById('panel-grid');
+        if (panelGrid) {
+          panelGrid.className = `layout-${currentLayout}`;
+        }
+      }
+
+      // 恢复面板配置（保存到 multiPanelProviders）
+      if (state.panels && state.panels.length > 0) {
+        const providerIds = state.panels.map(p => p.providerId);
+        await chrome.storage.sync.set({ multiPanelProviders: providerIds });
+      }
+
+      if (state.googleProviderMode) {
+        await chrome.storage.sync.set({
+          googleProviderMode: normalizeGoogleProviderMode(state.googleProviderMode)
+        });
+      }
+
+      // 清除已恢复的状态
+      await chrome.storage.session.remove('preservedState');
+      await chrome.storage.local.remove('preservedState');
+    }
+  } catch (error) {
+    console.error('Error restoring state:', error);
+  }
+}
+
+async function initializePanels() {
+  try {
+    const settings = await chrome.storage.sync.get({
+      providerOrder: null,
+      enabledProviders: DEFAULT_PROVIDERS,
+      multiPanelProviders: ['deepseek', 'doubao']
+    });
+    const availableProviderIds = new Set(
+      (await getEnabledProviders()).map(({ id }) => id)
+    );
+
+    const providerIds = selectStartupPanels(settings.multiPanelProviders, availableProviderIds, MAX_PANELS);
+    restoringPanels = true;
+    try {
+      for (const id of providerIds) await addPanel(id);
+    } finally {
+      restoringPanels = false;
+    }
+    await saveProviderConfiguration();
+
+    // One-time upgrade handoff: preserve open conversation URLs without storing credentials.
+    const resume = (await chrome.storage.local.get('cnResumeOnUpgrade')).cnResumeOnUpgrade;
+    if (resume && Date.now() - resume.timestamp < 15 * 60 * 1000 && Array.isArray(resume.pages)) {
+      for (const panel of panels) {
+        const page = resume.pages.find(item => item.providerId === panel.providerId);
+        if (page && isProviderAllowedUrl(panel.providerId, page.url)) reloadPanelIframe(panel, page.url);
+      }
+      await chrome.storage.local.remove('cnResumeOnUpgrade');
+    }
+
+    // Update panel selectors in toolbar
+    updatePanelSelectors();
+  } catch (error) {
+    console.error('Error initializing panels:', error);
+  }
+}
+
+// ===== Panel Management =====
+
+async function addPanel(providerId) {
+  // Sync before the capacity check so no await separates the check from the
+  // panel being added.
+  if (providerId === 'grok') {
+    await requestGrokWebSocketCookieSync();
+  }
+
+  if (panels.length >= MAX_PANELS) {
+    showToast(`Maximum number of panels reached (${MAX_PANELS})`);
+    return;
+  }
+
+  const provider = getProviderById(providerId);
+  if (!provider) {
+    console.error('Provider not found:', providerId);
+    return;
+  }
+
+  // Everything from the capacity check to panels.push() below runs without
+  // awaiting, so concurrent calls cannot both pass the check.
+  // Auto layout adjustment: upgrade from 1xN to 1x(N+1) when adding panel exceeds capacity
+  const newPanelCount = panels.length + 1;
+  const adjustedLayout = getAutoAdjustedLayout(currentLayout, newPanelCount);
+
+  if (adjustedLayout) {
+    // Apply layout directly without calling setLayout (to avoid recursion from adjustPanelCount)
+    currentLayout = adjustedLayout;
+    const panelGrid = document.getElementById('panel-grid');
+    panelGrid.className = `layout-${adjustedLayout}`;
+
+    // Update layout button states (if layout modal is open)
+    document.querySelectorAll('.layout-option').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.layout === adjustedLayout);
+    });
+    // The adjusted layout is saved together with the new panel below.
+  }
+
+  const panelId = `panel-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+  const panelGrid = document.getElementById('panel-grid');
+
+  // Create panel element
+  const panelEl = document.createElement('div');
+  panelEl.className = 'panel-item';
+  panelEl.id = panelId;
+  panelEl.innerHTML = `
+    <div class="panel-header">
+      <div class="panel-header-left">
+        <img src="${getThemeAwareProviderIcon(provider)}" alt="${provider.name}" class="provider-icon" data-provider-id="${provider.id}">
+        <span>${provider.name}</span>
+      </div>
+      <div class="panel-header-right">${getPanelHeaderRightHtml(providerId)}</div>
+    </div>
+    <div class="panel-iframe-container">
+      <div class="panel-loading">
+        <img src="${getThemeAwareProviderIcon(provider)}" alt="${provider.name}" class="loading-icon" data-provider-id="${provider.id}">
+        <span class="loading-text">正在加载 ${provider.name}…</span>
+      </div>
+      <iframe
+        src="${getProviderFrameUrl(providerId)}"
+        sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
+        allow="clipboard-read; clipboard-write"
+      ></iframe>
+    </div>
+  `;
+
+  panelGrid.appendChild(panelEl);
+
+  // Get iframe reference
+  const iframe = panelEl.querySelector('iframe');
+  const loadingEl = panelEl.querySelector('.panel-loading');
+
+  // Handle iframe load
+  // Grace period after load to catch AI pages that auto-focus after JS init
+  const LOAD_GRACE_PERIOD = 3000;
+  loadingPanelIds.add(panelId);
+  iframe.addEventListener('load', () => {
+    loadingEl.classList.add('hidden');
+    const panel = panels.find(p => p.id === panelId);
+    if (isTemporaryChatModeEnabled && panel && requiresTemporaryChatActivationRetry(panel.providerId)) {
+      startTemporaryChatActivationForPanel(panel);
+    }
+    setTimeout(() => {
+      loadingPanelIds.delete(panelId);
+    }, LOAD_GRACE_PERIOD);
+  });
+
+  iframe.addEventListener('error', () => {
+    loadingEl.innerHTML = `<img src="${getThemeAwareProviderIcon(provider)}" alt="${provider.name}" class="loading-icon" data-provider-id="${provider.id}"><span class="loading-text">${provider.name} 加载失败，请刷新或在新标签页打开</span>`;
+    loadingPanelIds.delete(panelId);
+  });
+
+  // Add to panels array
+  const panel = {
+    id: panelId,
+    providerId,
+    iframe,
+    currentUrl: null,
+    state: 'loading',
+    pageNeededWidth: 0,
+    fit: createPanelFitState()
+  };
+  panels.push(panel);
+  panelFitObserver?.observe(iframe.parentElement);
+  resetFillRetryState();
+
+  bindPanelHeaderActions(panelId);
+
+  // Save provider configuration
+  await saveProviderConfiguration();
+
+  // Update panel selectors to show logo and name
+  updatePanelSelectors();
+}
+
+function removePanel(panelId) {
+  const panelIndex = panels.findIndex(p => p.id === panelId);
+  if (panelIndex === -1) return;
+
+  const fitContainer = panels[panelIndex].iframe?.parentElement;
+  if (fitContainer) {
+    panelFitObserver?.unobserve(fitContainer);
+  }
+
+  // Remove from DOM
+  const panelEl = document.getElementById(panelId);
+  if (panelEl) {
+    panelEl.remove();
+  }
+
+  // Remove from arrays and sets
+  panels.splice(panelIndex, 1);
+  loadingPanelIds.delete(panelId);
+  resetFillRetryState();
+
+  // Auto-shrink layout if applicable
+  const shrunkLayout = getAutoShrunkLayout(currentLayout, panels.length);
+  if (shrunkLayout) {
+    currentLayout = shrunkLayout;
+    const panelGrid = document.getElementById('panel-grid');
+    panelGrid.className = `layout-${shrunkLayout}`;
+
+    // Update layout button states
+    document.querySelectorAll('.layout-option').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.layout === shrunkLayout);
+    });
+
+    // Save configuration with the new layout
+    saveProviderConfiguration();
+  }
+
+  // Update selectors
+  updatePanelSelectors();
+
+  // Save configuration
+  saveProviderConfiguration();
+}
+
+async function switchPanelProvider(panelId, newProviderId) {
+  const panel = panels.find(p => p.id === panelId);
+  if (!panel) return;
+
+  const provider = getProviderById(newProviderId);
+  if (!provider) return;
+
+  const panelEl = document.getElementById(panelId);
+  if (!panelEl) return;
+
+  resetFillRetryState();
+
+  if (isGoogleProvider(newProviderId)) {
+    syncGoogleModeControls();
+  }
+
+  if (newProviderId === 'grok') {
+    await requestGrokWebSocketCookieSync();
+  }
+
+  // Update panel header
+  const headerIcon = panelEl.querySelector('.panel-header-left img');
+  const headerName = panelEl.querySelector('.panel-header-left span');
+  const headerRight = panelEl.querySelector('.panel-header-right');
+  headerIcon.src = getThemeAwareProviderIcon(provider);
+  headerIcon.dataset.providerId = provider.id;
+  headerIcon.alt = provider.name;
+  headerName.textContent = provider.name;
+  queueMicrotask(syncCnControls);
+  headerRight.innerHTML = getPanelHeaderRightHtml(newProviderId);
+
+  // Update iframe
+  const iframe = panelEl.querySelector('iframe');
+
+  // Update panel data
+  panel.providerId = newProviderId;
+  panel.iframe = iframe;
+  panel.currentUrl = null;
+  panel.pageNeededWidth = 0;
+  updatePanelFit(panel);
+  bindPanelHeaderActions(panelId);
+  reloadPanelIframe(panel);
+
+  // Update selectors and save
+  updatePanelSelectors();
+  await saveProviderConfiguration();
+}
+
+function updatePanelSelectors() {
+  const selectorsContainer = document.getElementById('panel-selectors');
+  selectorsContainer.innerHTML = '';
+
+  panels.forEach(panel => {
+    const provider = getProviderById(panel.providerId);
+    if (!provider) return;
+
+    const selector = document.createElement('div');
+    selector.className = 'panel-selector';
+    selector.dataset.panelId = panel.id;
+    selector.innerHTML = `
+      <img src="${getThemeAwareProviderIcon(provider)}" alt="${provider.name}" class="provider-icon" data-provider-id="${provider.id}">
+      <span>${provider.name}</span>
+      <button class="remove-panel" title="关闭此平台">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    `;
+
+    // Remove button handler
+    const removeBtn = selector.querySelector('.remove-panel');
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (panels.length > 1) {
+        removePanel(panel.id);
+      } else {
+        showToast('At least one panel is required');
+      }
+    });
+
+    selectorsContainer.appendChild(selector);
+  });
+}
+
+async function saveProviderConfiguration() {
+  if (restoringPanels) return;
+  const providerIds = panels.map(p => p.providerId);
+  try {
+    await chrome.storage.sync.set({
+      multiPanelProviders: providerIds,
+      multiPanelLayout: currentLayout
+    });
+  } catch (error) {
+    console.error('Error saving provider configuration:', error);
+  }
+}
+
+function toggleToolbar() {
+  const toolbar = document.getElementById('toolbar');
+  const expandBar = document.getElementById('toolbar-expand-bar');
+  const toggleBtn = document.getElementById('toggle-toolbar-btn');
+
+  const isCollapsed = toolbar.classList.toggle('collapsed');
+
+  if (isCollapsed) {
+    expandBar.classList.remove('hidden');
+  } else {
+    expandBar.classList.add('hidden');
+  }
+}
+
+// ===== Message Broadcasting =====
+function createFillActionRequestId() {
+  fillActionRequestCounter += 1;
+  return `fill-${Date.now()}-${fillActionRequestCounter}`;
+}
+
+function updateFillRetryButton() {
+  const fillBtn = document.getElementById('fill-input-btn');
+  if (!fillBtn) {
+    return;
+  }
+
+  const text = fillBtn.querySelector('.btn-text');
+  const hasFailures = failedFillPanelIds.size > 0;
+  if (text) {
+    text.textContent = hasFailures ? '重试失败平台' : '填入各平台';
+  }
+  fillBtn.title = hasFailures ? '重试失败平台' : '填入各平台';
+  fillBtn.dataset.retryFailed = hasFailures ? 'true' : 'false';
+}
+
+function resetFillRetryState() {
+  fillPayloadRevision += 1;
+  pendingFillImageIdsByPanel = new Map();
+  if (failedFillPanelIds.size === 0) {
+    updateFillRetryButton();
+    return;
+  }
+
+  failedFillPanelIds = new Set();
+  updateFillRetryButton();
+}
+
+function setFillRetryState(panelIds) {
+  failedFillPanelIds = new Set(panelIds);
+  updateFillRetryButton();
+}
+
+export async function broadcastMessage(text, autoSubmit = true) {
+  return broadcastCn(text, autoSubmit);
+}
+
+async function legacyBroadcastMessage(text, autoSubmit = true) {
+  if (!broadcastGate.tryAcquire()) {
+    return;
+  }
+
+  const sendBtn = document.getElementById('send-all-btn');
+  const fillBtn = document.getElementById('fill-input-btn');
+  const statusEl = document.getElementById('send-status');
+
+  const hasImages = uploadedImages.length > 0;
+  const hasFailedPanels = failedFillPanelIds.size > 0;
+  const broadcastParams = getPanelBroadcastActionParams({
+    hasImages,
+    hasFailedPanels,
+    autoSubmit
+  });
+  const { isFillAction, shouldAutoSubmit, waitForActionResult } = broadcastParams;
+
+  try {
+    if (!text.trim() && !hasImages) {
+      // If input is empty and autoSubmit is true, just trigger send buttons
+      if (autoSubmit) {
+        await triggerSendButtons();
+        return;
+      }
+      showToast('Please enter a message or upload an image');
+      return;
+    }
+
+    // Filling focuses each provider's composer too. Keep the unified input
+    // focused, or the next Enter lands in one panel and sends only there.
+    const fillActionRequestId = isFillAction ? createFillActionRequestId() : null;
+    const requestId = restoreUnifiedInputFocusAfterSend(
+      shouldAutoSubmit ? getChatgptPanelsWithFrames() : [],
+      fillActionRequestId || createSendFocusRequestId()
+    );
+    const payloadRevisionAtStart = fillPayloadRevision;
+
+    // Disable buttons during send
+    sendBtn.disabled = true;
+    fillBtn.disabled = true;
+    statusEl.textContent = shouldAutoSubmit ? 'Sending...' : 'Filling...';
+    statusEl.className = 'send-status';
+
+    cleanStalePanelRetryState(panels, pendingFillImageIdsByPanel, failedFillPanelIds);
+
+    const targetPanels = hasImages
+      ? getFillTargetPanels(panels, failedFillPanelIds)
+      : panels;
+    const previousFailedPanelIds = new Set(failedFillPanelIds);
+    const attemptedImagesByPanel = new Map();
+    if (waitForActionResult) {
+      targetPanels.forEach(panel => sendFocusFillingPanelIds.add(panel.id));
+    }
+
+    // Send to all panels, or only the panels that failed the previous image fill.
+    const panelResults = await Promise.allSettled(
+      targetPanels.map(panel => {
+        const isPanelRetry = previousFailedPanelIds.has(panel.id);
+        let panelImages = [];
+        if (hasImages) {
+          if (isPanelRetry && pendingFillImageIdsByPanel.has(panel.id)) {
+            const pendingIds = new Set(pendingFillImageIdsByPanel.get(panel.id));
+            panelImages = uploadedImages.filter(img => pendingIds.has(img.id));
+          } else {
+            panelImages = uploadedImages;
+          }
+        }
+        attemptedImagesByPanel.set(panel.id, panelImages);
+
+        const imageCount = panelImages.length;
+        const panelTimeoutMs = isFillAction
+          ? getPanelActionResultTimeoutMs(imageCount)
+          : 8000;
+
+        return sendToPanel(
+          panel,
+          text,
+          panelImages,
+          shouldAutoSubmit,
+          requestId,
+          isPanelRetry,
+          panelTimeoutMs,
+          {
+            isFillAction,
+            waitForActionResult
+          }
+        ).finally(() => {
+          // Uploads can outlast the restore timers; hold focus until each
+          // panel has finished filling.
+          if (activeSendFocusRequestId === requestId && sendFocusFillingPanelIds.delete(panel.id)) {
+            maybeStopSendFocusRestore();
+          }
+        });
+      })
+    );
+    const normalizedResults = normalizePanelResults(panelResults, targetPanels);
+
+    if (hasImages) {
+      if (fillPayloadRevision !== payloadRevisionAtStart) {
+        statusEl.textContent = 'Input changed; fill again';
+        statusEl.className = 'send-status partial';
+        setTimeout(() => {
+          statusEl.textContent = '';
+          statusEl.className = 'send-status';
+        }, 3000);
+        return;
+      }
+
+      normalizedResults.forEach(result => {
+        if (!result?.panelId) return;
+        const attempted = attemptedImagesByPanel.get(result.panelId) || uploadedImages;
+        const attemptedIds = attempted.map(img => img.id);
+
+        if (result.ok) {
+          failedFillPanelIds.delete(result.panelId);
+          pendingFillImageIdsByPanel.delete(result.panelId);
+        } else {
+          failedFillPanelIds.add(result.panelId);
+          const pendingIds = calculatePendingImageIds(attemptedIds, result.succeededImageIds);
+          pendingFillImageIdsByPanel.set(result.panelId, pendingIds);
+        }
+      });
+
+      const summary = summarizeFillResults(panels, normalizedResults, previousFailedPanelIds);
+      const totalCount = panels.length;
+      const { successfulCount, failedCount } = summary;
+
+      if (summary.allSucceeded) {
+        statusEl.textContent = `Filled ${successfulCount} input${successfulCount > 1 ? 's' : ''}`;
+        statusEl.className = 'send-status success';
+        setFillRetryState([]);
+        pendingFillImageIdsByPanel.clear();
+      } else if (successfulCount > 0) {
+        statusEl.textContent = `Filled ${successfulCount}/${totalCount}; ${failedCount} failed`;
+        statusEl.className = 'send-status partial';
+        setFillRetryState(summary.failedPanelIds);
+      } else {
+        statusEl.textContent = `Fill failed: ${failedCount}/${totalCount} panels failed`;
+        statusEl.className = 'send-status error';
+        setFillRetryState(summary.failedPanelIds);
+      }
+
+      if (failedCount > 0) {
+        const resultsByPanelId = new Map(
+          normalizedResults.map(result => [result.panelId, result])
+        );
+        const failedPanels = panels
+          .filter(panel => summary.failedPanelIds.has(panel.id))
+          .map(panel => ({
+            panelId: panel.id,
+            provider: panel.providerId,
+            reason: resultsByPanelId.get(panel.id)?.reason || 'injection-error'
+          }));
+        console.warn('[Multi-Panel] Image fill failed for panels:', failedPanels);
+      }
+
+      if (successfulCount > 0) {
+        rememberSnapshotPrompt(text);
+      }
+
+      if (shouldClearFillPayload(summary)) {
+        document.getElementById('unified-input').value = '';
+        resizeTextarea();
+        clearAllImages();
+      }
+
+      setTimeout(() => {
+        statusEl.textContent = '';
+        statusEl.className = 'send-status';
+      }, 3000);
+      return;
+    }
+
+    // Count results (panels only)
+    const panelSuccessful = normalizedResults.filter(result => result.ok).length;
+    const totalSuccessful = panelSuccessful;
+    const totalCount = panels.length;
+    const failed = totalCount - totalSuccessful;
+
+    // Update status
+    if (failed === 0) {
+      statusEl.textContent = shouldAutoSubmit
+        ? `Sent to ${totalSuccessful} AI${totalSuccessful > 1 ? 's' : ''}`
+        : `Filled ${totalSuccessful} input${totalSuccessful > 1 ? 's' : ''}`;
+      statusEl.className = 'send-status success';
+    } else if (totalSuccessful > 0) {
+      statusEl.textContent = shouldAutoSubmit
+        ? `Sent to ${totalSuccessful}/${totalCount}`
+        : `Filled ${totalSuccessful}/${totalCount}`;
+      statusEl.className = 'send-status partial';
+    } else {
+      statusEl.textContent = shouldAutoSubmit ? 'Failed to send' : 'Failed to fill';
+      statusEl.className = 'send-status error';
+    }
+
+    // Clear status after delay
+    setTimeout(() => {
+      statusEl.textContent = '';
+      statusEl.className = 'send-status';
+    }, 3000);
+
+    if (shouldAutoSubmit && totalSuccessful > 0) {
+      recordSendForRatingPrompt();
+    }
+
+    if (totalSuccessful > 0) {
+      rememberSnapshotPrompt(text);
+    }
+
+    // Clear input and save history
+    if (totalSuccessful > 0) {
+      document.getElementById('unified-input').value = '';
+      resizeTextarea();
+
+      // Clear images after successful fill/send
+      if (uploadedImages.length > 0) {
+        clearAllImages();
+      }
+    }
+  } catch (error) {
+    console.error('Error in broadcastMessage:', error);
+    statusEl.textContent = 'Error occurred';
+    statusEl.className = 'send-status error';
+    setTimeout(() => {
+      statusEl.textContent = '';
+      statusEl.className = 'send-status';
+    }, 3000);
+  } finally {
+    // Always re-enable buttons and release broadcast gate
+    sendBtn.disabled = false;
+    fillBtn.disabled = false;
+    broadcastGate.release();
+  }
+}
+
+export async function sendToPanel(
+  panel,
+  text,
+  images = [],
+  autoSubmit = true,
+  requestId = null,
+  isRetry = false,
+  timeoutMs = 8000,
+  options = {}
+) {
+  if (!panel.iframe || !panel.iframe.contentWindow) {
+    return {
+      ok: false,
+      panelId: panel.id,
+      provider: panel.providerId,
+      reason: 'control-not-found',
+      succeededImageIds: []
+    };
+  }
+
+  const isFillAction = options.isFillAction === true;
+  const waitForActionResult = options.waitForActionResult === true;
+  const expectedImageIds = images.map(img => img.id).filter(Boolean);
+
+  const waiter = waitForActionResult
+    ? createPanelActionResultWaiter({
+      target: window,
+      panel,
+      requestId,
+      expectedImageIds,
+      action: 'fill',
+      timeoutMs
+    })
+    : null;
+
+  try {
+    const messageType = determinePanelMessageType({ isFillAction });
+
+    const imagesPayload = images.map(img => ({
+      id: img.id,
+      dataUrl: img.dataUrl,
+      name: img.name,
+      type: img.type
+    }));
+
+    panel.iframe.contentWindow.postMessage({
+      type: messageType,
+      text,
+      images: imagesPayload,
+      autoSubmit,
+      requestId,
+      action: waitForActionResult ? 'fill' : undefined,
+      retry: waitForActionResult ? isRetry : undefined,
+      providerMode: getPanelProviderMode(panel),
+      context: 'multi-panel'
+    }, '*');
+
+    if (waiter) {
+      return await waiter.promise;
+    }
+
+    return {
+      ok: true,
+      panelId: panel.id,
+      provider: panel.providerId,
+      succeededImageIds: expectedImageIds
+    };
+  } catch (error) {
+    console.error(`Error sending to ${panel.providerId}:`, error);
+    waiter?.cancel('injection-error');
+    return waiter
+      ? await waiter.promise
+      : {
+        ok: false,
+        panelId: panel.id,
+        provider: panel.providerId,
+        reason: 'injection-error',
+        succeededImageIds: []
+      };
+  }
+}
+
+// Clear all input boxes (unified input + all panels)
+async function clearAllInputs() {
+  // Clear unified input
+  document.getElementById('unified-input').value = '';
+  resizeTextarea();
+
+  // Clear uploaded images
+  clearAllImages();
+
+  // Send clear message to all panels
+  panels.forEach(panel => {
+    if (panel.iframe && panel.iframe.contentWindow) {
+      panel.iframe.contentWindow.postMessage({
+        type: 'CLEAR_INPUT',
+        clearImages: true,
+        providerMode: getPanelProviderMode(panel),
+        context: 'multi-panel'
+      }, '*');
+    }
+  });
+  showToast('All inputs cleared');
+}
+
+// ===== Store Rating Prompt =====
+
+function setRatingBannerVisible(visible) {
+  const banner = document.getElementById('rating-banner');
+  if (banner) {
+    banner.hidden = !visible;
+  }
+}
+
+async function refreshRatingBanner(state) {
+  try {
+    setRatingBannerVisible(shouldShowRatingPrompt(state || await loadRatingPromptState()));
+  } catch (error) {
+    console.warn('[Multi-Panel] Failed to load rating prompt state:', error);
+  }
+}
+
+// Counting is best effort: a storage failure must never affect sending.
+function recordSendForRatingPrompt() {
+  countSuccessfulSend()
+    .then(refreshRatingBanner)
+    .catch(error => console.warn('[Multi-Panel] Failed to count send for rating prompt:', error));
+}
+
+async function answerRatingPrompt(action) {
+  setRatingBannerVisible(false);
+  try {
+    if (action === RATING_PROMPT_ACTIONS.RATE) {
+      await chrome.tabs.create({ url: RATING_PROMPT_REVIEW_URL });
+    }
+    await saveRatingPromptAction(action);
+  } catch (error) {
+    console.warn('[Multi-Panel] Failed to save rating prompt answer:', error);
+  }
+}
+
+function setupRatingPrompt() {
+  const buttons = {
+    'rating-rate-btn': RATING_PROMPT_ACTIONS.RATE,
+    'rating-later-btn': RATING_PROMPT_ACTIONS.LATER,
+    'rating-never-btn': RATING_PROMPT_ACTIONS.NEVER
+  };
+  Object.entries(buttons).forEach(([id, action]) => {
+    document.getElementById(id)?.addEventListener('click', () => answerRatingPrompt(action));
+  });
+  refreshRatingBanner();
+}
+
+// ===== Share Snapshot =====
+
+// Prompt shown above the shared panels: the last one Panelize sent or filled.
+let lastSnapshotPrompt = '';
+let currentSnapshot = null;
+let isCapturingSnapshot = false;
+// Captures behind the open dialog, by mode; title edits re-compose these.
+const snapshotCaptures = new Map();
+let snapshotMode = SNAPSHOT_MODES.FULL;
+// Mode the dialog opens in: the last one picked, kept across sessions.
+let preferredSnapshotMode = SNAPSHOT_MODES.FULL;
+let preferredSnapshotModePromise = null;
+let isPreferredSnapshotModeChosen = false;
+const SNAPSHOT_MODE_STORAGE_KEY = 'shareSnapshotMode';
+// Captures started before giving up on a window that keeps changing size.
+const SNAPSHOT_LAYOUT_ATTEMPTS = 3;
+// Tab sharing from an earlier snapshot, kept so Chrome asks only once.
+let keptSnapshotSource = null;
+let snapshotAbortController = null;
+// Where the pointer was last seen, so a tab-sharing capture knows whether
+// Chrome may draw it into the frames.
+const pointerTracker = createPointerTracker();
+let lastSnapshotProgress = null;
+let snapshotRenderTimer = null;
+let snapshotRenderSequence = 0;
+// Latest render of the share image, which exports wait for.
+let snapshotRender = Promise.resolve();
+let snapshotIconPromise = null;
+let snapshotHint = '';
+let currentTabIdPromise = null;
+const SNAPSHOT_TITLE_RENDER_DELAY_MS = 250;
+// Set once captureVisibleTab worked in this tab. The activeTab grant then
+// lasts for the life of the page, so the shortcut tip is no longer needed.
+const SNAPSHOT_VISIBLE_TAB_FLAG = 'panelize.snapshotVisibleTabCaptured';
+
+function rememberSnapshotPrompt(text) {
+  if (typeof text === 'string' && text.trim()) {
+    lastSnapshotPrompt = text;
+  }
+}
+
+function getSnapshotPrompt() {
+  return lastSnapshotPrompt || document.getElementById('unified-input')?.value || '';
+}
+
+/** Resolves with the mode picked last, read from storage the first time. */
+function loadPreferredSnapshotMode() {
+  if (!preferredSnapshotModePromise) {
+    preferredSnapshotModePromise = chrome.storage.local.get(SNAPSHOT_MODE_STORAGE_KEY)
+      .then(result => {
+        const mode = result?.[SNAPSHOT_MODE_STORAGE_KEY];
+        // A mode picked on this page meanwhile wins over the stored one.
+        if (!isPreferredSnapshotModeChosen && Object.values(SNAPSHOT_MODES).includes(mode)) {
+          preferredSnapshotMode = mode;
+        }
+      })
+      .catch(error => {
+        console.warn('[Multi-Panel] Failed to load the snapshot mode:', error);
+      });
+  }
+  return preferredSnapshotModePromise.then(() => preferredSnapshotMode);
+}
+
+function savePreferredSnapshotMode(mode) {
+  isPreferredSnapshotModeChosen = true;
+  if (mode === preferredSnapshotMode) return;
+  preferredSnapshotMode = mode;
+  chrome.storage.local.set({ [SNAPSHOT_MODE_STORAGE_KEY]: mode }).catch(error => {
+    console.warn('[Multi-Panel] Failed to save the snapshot mode:', error);
+  });
+}
+
+function updateShareStreamStatus() {
+  const status = document.getElementById('share-stream-status');
+  if (status) status.hidden = !keptSnapshotSource?.isActive();
+}
+
+/** Sharing ended: from Stop, Chrome's own bar, or the shared tab going away. */
+function handleSnapshotSharingEnded() {
+  if (keptSnapshotSource && !keptSnapshotSource.isActive()) {
+    keptSnapshotSource = null;
+  }
+  updateShareStreamStatus();
+}
+
+function stopSnapshotSharing() {
+  keptSnapshotSource?.close();
+  keptSnapshotSource = null;
+  updateShareStreamStatus();
+}
+
+/**
+ * Silent capture when this tab has the activeTab grant; otherwise the kept
+ * tab sharing, or a new one that is then kept.
+ */
+async function openSnapshotSource() {
+  const opened = await openTabCaptureSource({
+    tabId: await getCurrentTabId(),
+    keptSource: keptSnapshotSource,
+    onEnded: handleSnapshotSharingEnded
+  });
+  if (opened.source.kind === TAB_CAPTURE_KINDS.DISPLAY_MEDIA) {
+    keptSnapshotSource = opened.source;
+  } else if (keptSnapshotSource) {
+    // The grant lasts for the life of the page: sharing is no longer needed.
+    stopSnapshotSharing();
+  }
+  updateShareStreamStatus();
+  return opened;
+}
+
+function isStaleSnapshotSourceError(error) {
+  return error instanceof TabCaptureError
+    && (error.code === TAB_CAPTURE_ERRORS.ENDED || error.code === TAB_CAPTURE_ERRORS.WRONG_SURFACE);
+}
+
+/** Opens the capture source and gets it ready for a run. */
+async function startSnapshotSource() {
+  let opened = await openSnapshotSource();
+  if (!opened.reused) return opened;
+  try {
+    await opened.source.start();
+  } catch (error) {
+    if (!isStaleSnapshotSourceError(error)) throw error;
+    // Sharing ended since the last snapshot: ask again.
+    stopSnapshotSharing();
+    opened = await openSnapshotSource();
+  }
+  return opened;
+}
+
+function getCurrentTabId() {
+  if (!currentTabIdPromise) {
+    currentTabIdPromise = typeof chrome.tabs?.getCurrent === 'function'
+      ? Promise.resolve(chrome.tabs.getCurrent()).then(tab => tab?.id ?? null).catch(() => null)
+      : Promise.resolve(null);
+  }
+  return currentTabIdPromise;
+}
+
+async function loadSnapshotIcon() {
+  const icon = new Image();
+  icon.src = chrome.runtime.getURL('icons/icon-128.png');
+  try {
+    await icon.decode();
+    return icon;
+  } catch (error) {
+    console.warn('[Multi-Panel] Failed to load the snapshot icon:', error);
+    return null;
+  }
+}
+
+function getSnapshotIcon() {
+  if (!snapshotIconPromise) {
+    snapshotIconPromise = loadSnapshotIcon();
+  }
+  return snapshotIconPromise;
+}
+
+function canvasToPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(blob => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error('Could not encode the snapshot as PNG'));
+      }
+    }, 'image/png');
+  });
+}
+
+function getSnapshotTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+}
+
+function getSnapshotPanels() {
+  return panels.map(panel => ({
+    id: panel.id,
+    name: getProviderById(panel.providerId)?.name || panel.providerId,
+    iframe: panel.iframe,
+    element: document.getElementById(panel.id)
+  })).filter(panel => panel.element && panel.iframe);
+}
+
+function isShareModalOpen() {
+  const modal = document.getElementById('share-modal');
+  return Boolean(modal) && modal.style.display !== 'none';
+}
+
+function releaseSnapshotCapture(capture) {
+  if (!capture?.content) return;
+  if (typeof capture.content.close === 'function') {
+    capture.content.close();
+  } else {
+    // Free the stitched canvas right away; it can be large.
+    capture.content.width = 0;
+    capture.content.height = 0;
+  }
+}
+
+function clearSnapshotCaptures() {
+  snapshotCaptures.forEach(releaseSnapshotCapture);
+  snapshotCaptures.clear();
+}
+
+function setSnapshotCapture(mode, capture, { replaceAll = false } = {}) {
+  if (replaceAll) {
+    clearSnapshotCaptures();
+  } else {
+    releaseSnapshotCapture(snapshotCaptures.get(mode));
+  }
+  snapshotCaptures.set(mode, capture);
+}
+
+function updateSnapshotProgress(progress) {
+  const text = document.getElementById('snapshot-progress-text');
+  const bar = document.getElementById('snapshot-progress-bar');
+  if (!text || !bar) return;
+  lastSnapshotProgress = progress;
+  if (!progress) {
+    text.textContent = t('shareProgressPreparing');
+    bar.removeAttribute('value');
+    return;
+  }
+  const total = Math.max(progress.step, progress.total);
+  text.textContent = t('shareProgressStep', [String(progress.step), String(total)]);
+  bar.max = total;
+  bar.value = progress.step;
+}
+
+/** Asks the user to keep the pointer still while a frame waits for it. */
+function showSnapshotPointerWait(waiting) {
+  const text = document.getElementById('snapshot-progress-text');
+  if (!text) return;
+  if (waiting) {
+    text.textContent = t('shareProgressHoldPointer');
+  } else {
+    updateSnapshotProgress(lastSnapshotProgress);
+  }
+}
+
+function setSnapshotBusy(busy) {
+  document.body.classList.toggle('snapshot-capturing', busy);
+  const shareBtn = document.getElementById('share-snapshot-btn');
+  if (shareBtn) shareBtn.disabled = busy;
+  document.querySelectorAll('.share-mode-btn, #share-download-btn, #share-copy-btn, #share-title-input')
+    .forEach(element => {
+      element.disabled = busy;
+    });
+  const progress = document.getElementById('snapshot-progress');
+  if (progress) progress.hidden = !busy;
+  if (busy) updateSnapshotProgress(null);
+}
+
+function updateShareModeButtons() {
+  document.querySelectorAll('.share-mode-btn').forEach(button => {
+    button.setAttribute('aria-checked', String(button.dataset.mode === snapshotMode));
+  });
+}
+
+async function updateSnapshotHint({ source, fallbackReason }) {
+  if (source.kind === TAB_CAPTURE_KINDS.VISIBLE_TAB) {
+    sessionStorage.setItem(SNAPSHOT_VISIBLE_TAB_FLAG, '1');
+    snapshotHint = '';
+    return;
+  }
+  snapshotHint = '';
+  if (fallbackReason !== TAB_CAPTURE_ERRORS.PERMISSION || sessionStorage.getItem(SNAPSHOT_VISIBLE_TAB_FLAG)) {
+    return;
+  }
+  // The toolbar icon and its shortcut do nothing while the setting is off.
+  if ((await getSetting('keyboardShortcutEnabled')) === false) {
+    return;
+  }
+  let shortcut = '';
+  try {
+    shortcut = getExecuteActionShortcut(await chrome.commands.getAll());
+  } catch (error) {
+    // Without the commands API, point at the toolbar icon instead
+  }
+  snapshotHint = shortcut ? t('shareShortcutHint', [shortcut]) : t('shareToolbarHint');
+}
+
+// Names the panels whose answer is not shown whole, both in the dialog and in the image.
+function getSnapshotCutNotes(capture) {
+  const locale = getSnapshotLocale();
+  const notes = [];
+  if (capture.truncated.length) {
+    notes.push(t('shareTruncatedNote', [formatProviderList(capture.truncated, locale)]));
+  }
+  if (capture.interrupted.length) {
+    notes.push(t('shareInterruptedNote', [formatProviderList(capture.interrupted, locale)]));
+  }
+  return notes;
+}
+
+function updateShareNotes() {
+  const hint = document.getElementById('share-capture-hint');
+  const hintText = document.getElementById('share-capture-hint-text');
+  if (hint && hintText) {
+    hintText.textContent = snapshotHint;
+    hint.hidden = !snapshotHint;
+  }
+
+  const notes = document.getElementById('share-capture-notes');
+  const capture = snapshotCaptures.get(snapshotMode);
+  if (!notes) return;
+  const lines = [];
+  if (capture?.outOfView.length) {
+    lines.push(t('shareOutOfViewNote', [formatProviderList(capture.outOfView, getSnapshotLocale())]));
+  }
+  if (capture?.currentViewOnly.length) {
+    lines.push(t('shareCurrentViewOnly', [formatProviderList(capture.currentViewOnly, getSnapshotLocale())]));
+  }
+  if (capture) {
+    lines.push(...getSnapshotCutNotes(capture));
+  }
+  notes.textContent = lines.join('\n');
+  notes.hidden = lines.length === 0;
+}
+
+function getSnapshotLocale() {
+  return toLanguageTag(getTranslationLocale());
+}
+
+function setCurrentSnapshot(blob) {
+  const fileName = currentSnapshot?.fileName || getSnapshotFileName(new Date());
+  releaseCurrentSnapshot();
+  currentSnapshot = { blob, url: URL.createObjectURL(blob), fileName };
+  document.getElementById('share-preview').src = currentSnapshot.url;
+}
+
+async function renderSnapshot() {
+  const capture = snapshotCaptures.get(snapshotMode);
+  if (!capture) return;
+  const sequence = ++snapshotRenderSequence;
+  const icon = await getSnapshotIcon();
+  const locale = getSnapshotLocale();
+  const names = capture.names;
+  const canvas = document.createElement('canvas');
+  composeSnapshot(canvas, {
+    content: capture.content,
+    scale: capture.scale,
+    title: document.getElementById('share-title-input')?.value || '',
+    theme: capture.theme,
+    showWatermark: capture.showWatermark,
+    icon,
+    labelText: t('shareSnapshotPromptLabel'),
+    taglineText: t('shareSnapshotTagline'),
+    captionText: t('shareSnapshotCaption'),
+    sublineText: formatSnapshotSubline({
+      providersText: names.length ? t('shareSnapshotSubline', [formatProviderList(names, locale)]) : '',
+      date: capture.date,
+      locale
+    }),
+    // The image has room for one line.
+    noteText: getSnapshotCutNotes(capture).join(' · ')
+  });
+  const blob = await canvasToPngBlob(canvas);
+  canvas.width = 0;
+  canvas.height = 0;
+  // A newer render (e.g. the next keystroke) wins.
+  if (sequence !== snapshotRenderSequence) return;
+  setCurrentSnapshot(blob);
+  updateShareNotes();
+}
+
+/** Renders the share image now, instead of any render still scheduled. */
+function startSnapshotRender() {
+  clearTimeout(snapshotRenderTimer);
+  snapshotRenderTimer = null;
+  snapshotRender = renderSnapshot();
+  return snapshotRender;
+}
+
+function scheduleSnapshotRender() {
+  clearTimeout(snapshotRenderTimer);
+  snapshotRenderTimer = setTimeout(() => {
+    startSnapshotRender().catch(error => {
+      console.warn('[Multi-Panel] Failed to update the snapshot:', error);
+      showToast(t('shareCaptureFailed'));
+    });
+  }, SNAPSHOT_TITLE_RENDER_DELAY_MS);
+}
+
+/**
+ * The share image as the dialog stands, e.g. with a title edit still waiting
+ * for its render; null when the dialog was closed meanwhile. Rejects when
+ * the latest render failed, rather than giving an older image.
+ */
+async function getUpToDateSnapshot() {
+  if (snapshotRenderTimer !== null) {
+    startSnapshotRender();
+  }
+  for (;;) {
+    const render = snapshotRender;
+    try {
+      await render;
+    } catch (error) {
+      if (render === snapshotRender) throw error;
+    }
+    if (render === snapshotRender) return currentSnapshot;
+  }
+}
+
+function releaseCurrentSnapshot() {
+  if (currentSnapshot) {
+    URL.revokeObjectURL(currentSnapshot.url);
+    currentSnapshot = null;
+  }
+}
+
+function openShareModal() {
+  document.getElementById('share-modal').style.display = 'flex';
+  updateShareModeButtons();
+  updateShareStreamStatus();
+}
+
+/** Focus for the dialog once its buttons are enabled again. */
+function focusShareModal({ wasOpen }) {
+  if (!isShareModalOpen()) return;
+  const modal = document.getElementById('share-modal');
+  if (!wasOpen) {
+    document.getElementById('share-copy-btn')?.focus();
+  } else if (!modal.contains(document.activeElement)) {
+    // The mode button that started the capture was disabled meanwhile.
+    modal.querySelector('.share-mode-btn[aria-checked="true"]')?.focus();
+  }
+}
+
+function closeShareModal() {
+  const modal = document.getElementById('share-modal');
+  if (!modal || modal.style.display === 'none') return;
+  if (isCapturingSnapshot) return;
+  modal.style.display = 'none';
+  clearTimeout(snapshotRenderTimer);
+  snapshotRenderTimer = null;
+  snapshotRenderSequence += 1;
+  document.getElementById('share-preview').removeAttribute('src');
+  releaseCurrentSnapshot();
+  clearSnapshotCaptures();
+  snapshotHint = '';
+  snapshotMode = preferredSnapshotMode;
+}
+
+function getCaptureErrorMessage(error) {
+  if (error instanceof SnapshotCancelledError) return t('shareCaptureCancelled');
+  if (error instanceof SnapshotLayoutChangedError) return t('shareCaptureLayoutChanged');
+  if (error instanceof TabCaptureError) {
+    if (error.code === TAB_CAPTURE_ERRORS.CANCELLED) return t('shareCaptureCancelled');
+    if (error.code === TAB_CAPTURE_ERRORS.WRONG_SURFACE) return t('shareCaptureWrongSurface');
+    if (error.code === TAB_CAPTURE_ERRORS.TAB_HIDDEN) return t('shareCaptureTabHidden');
+  }
+  return t('shareCaptureFailed');
+}
+
+function isSnapshotCancellation(error) {
+  return error instanceof SnapshotCancelledError || error?.code === TAB_CAPTURE_ERRORS.CANCELLED;
+}
+
+/**
+ * Captures the comparison in `mode` and shows it in the share dialog.
+ * Must run straight from a user gesture: without the activeTab grant the
+ * capture falls back to the Screen Capture API, which needs that gesture.
+ * @param {string} mode - A SNAPSHOT_MODES value.
+ * @param {object} [options]
+ * @param {boolean} [options.refresh] - Drop the captures of other modes.
+ */
+async function captureSnapshot(mode, { refresh = false } = {}) {
+  if (isCapturingSnapshot) return;
+  isCapturingSnapshot = true;
+  const controller = new AbortController();
+  snapshotAbortController = controller;
+  const wasOpen = isShareModalOpen();
+  setSnapshotBusy(true);
+  let source = null;
+  let pointerGuard = null;
+  try {
+    const opened = await startSnapshotSource();
+    source = opened.source;
+    await updateSnapshotHint(opened);
+    const hideCursor = source.kind === TAB_CAPTURE_KINDS.DISPLAY_MEDIA;
+    document.documentElement.classList.toggle('snapshot-hide-cursor', hideCursor);
+    const grid = document.getElementById('panel-grid');
+    // CSS cannot hide the pointer from tab sharing: shield the panels and
+    // take each frame once Chrome has stopped drawing it.
+    pointerGuard = hideCursor
+      ? createPointerGuard({ area: grid, tracker: pointerTracker, onWaitChange: showSnapshotPointerWait })
+      : null;
+
+    const theme = getSnapshotTheme();
+    const showWatermark = (await getSetting('shareWatermarkEnabled')) !== false;
+    const options = {
+      source,
+      grid,
+      panels: getSnapshotPanels(),
+      prompt: getSnapshotPrompt(),
+      hideCursor,
+      beforeGrab: (signal) => pointerGuard?.waitUntilStill(signal),
+      signal: controller.signal,
+      onProgress: updateSnapshotProgress
+    };
+    const capture = () => (mode === SNAPSHOT_MODES.FULL
+      ? captureFullAnswers({
+        ...options,
+        // Room for the frame, with the longest headline the title can take.
+        getChromeHeight: (scale) => getSnapshotFrameChromeHeight({
+          contentWidth: Math.round(grid.getBoundingClientRect().width * scale),
+          scale,
+          theme,
+          showWatermark,
+          titleLineCount: SNAPSHOT_MAX_PROMPT_LINES,
+          hasSubline: true,
+          sublineLineCount: SNAPSHOT_MAX_SUBLINE_LINES,
+          hasNote: true
+        })
+      })
+      : captureCurrentView(options));
+    let result = null;
+    for (let attempt = 1; !result; attempt += 1) {
+      try {
+        result = await capture();
+      } catch (error) {
+        if (!(error instanceof SnapshotLayoutChangedError) || attempt >= SNAPSHOT_LAYOUT_ATTEMPTS) {
+          throw error;
+        }
+        // The panels moved or changed size under the capture: measure them again.
+        console.info('[Multi-Panel] Layout changed during the snapshot, starting over');
+      }
+    }
+    console.info('[Multi-Panel] Snapshot alignment:', JSON.stringify(result.alignment));
+
+    setSnapshotCapture(mode, { ...result, theme, showWatermark, date: new Date() }, { replaceAll: refresh || !wasOpen });
+    snapshotMode = mode;
+    savePreferredSnapshotMode(mode);
+    if (!wasOpen) {
+      document.getElementById('share-title-input').value = normalizePromptText(getSnapshotPrompt());
+    }
+    await startSnapshotRender();
+    openShareModal();
+  } catch (error) {
+    if (isSnapshotCancellation(error)) {
+      console.info('[Multi-Panel] Snapshot cancelled');
+    } else {
+      console.warn('[Multi-Panel] Failed to create snapshot:', error);
+    }
+    showToast(getCaptureErrorMessage(error));
+  } finally {
+    document.documentElement.classList.remove('snapshot-hide-cursor');
+    pointerGuard?.dispose();
+    if (source && source === keptSnapshotSource) {
+      // Paused until the next snapshot.
+      source.stop().catch(error => console.warn('[Multi-Panel] Failed to pause tab sharing:', error));
+    } else {
+      source?.close();
+    }
+    updateShareStreamStatus();
+    snapshotAbortController = null;
+    isCapturingSnapshot = false;
+    setSnapshotBusy(false);
+    updateShareModeButtons();
+    focusShareModal({ wasOpen });
+  }
+}
+
+function cancelSnapshotCapture() {
+  snapshotAbortController?.abort();
+}
+
+async function shareComparisonSnapshot() {
+  return captureSnapshot(await loadPreferredSnapshotMode(), { refresh: true });
+}
+
+function selectSnapshotMode(mode) {
+  if (isCapturingSnapshot || !Object.values(SNAPSHOT_MODES).includes(mode)) return;
+  if (snapshotCaptures.has(mode)) {
+    if (mode !== snapshotMode) {
+      snapshotMode = mode;
+      savePreferredSnapshotMode(mode);
+      updateShareModeButtons();
+      startSnapshotRender().catch(error => console.warn('[Multi-Panel] Failed to show the snapshot:', error));
+    }
+    return;
+  }
+  captureSnapshot(mode);
+}
+
+/** The toolbar icon, its shortcut or the context menu was used on this page. */
+async function handleShareSnapshotRequest(payload = {}) {
+  if (payload.tabId !== await getCurrentTabId() || isCapturingSnapshot) {
+    return;
+  }
+  captureSnapshot(isShareModalOpen() ? snapshotMode : await loadPreferredSnapshotMode(), { refresh: true });
+}
+
+async function downloadCurrentSnapshot() {
+  if (!currentSnapshot) return;
+  let snapshot;
+  try {
+    snapshot = await getUpToDateSnapshot();
+  } catch (error) {
+    console.warn('[Multi-Panel] Failed to update the snapshot:', error);
+    showToast(t('shareCaptureFailed'));
+    return;
+  }
+  if (!snapshot) return;
+  const link = document.createElement('a');
+  link.href = snapshot.url;
+  link.download = snapshot.fileName;
+  link.click();
+}
+
+async function copyCurrentSnapshot() {
+  if (!currentSnapshot) return;
+  try {
+    // Written right away, while the click still allows it; the image follows
+    // once a pending title edit is drawn.
+    const blob = getUpToDateSnapshot().then((snapshot) => {
+      if (!snapshot) throw new Error('The share dialog was closed');
+      return snapshot.blob;
+    });
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    showToast(t('shareCopied'));
+  } catch (error) {
+    console.warn('[Multi-Panel] Failed to copy snapshot:', error);
+    showToast(t('shareCopyFailed'));
+  }
+}
+
+function setupShareSnapshot() {
+  const modal = document.getElementById('share-modal');
+  document.getElementById('share-snapshot-btn')?.addEventListener('click', shareComparisonSnapshot);
+  document.getElementById('close-share-modal')?.addEventListener('click', closeShareModal);
+  document.getElementById('share-download-btn')?.addEventListener('click', downloadCurrentSnapshot);
+  document.getElementById('share-copy-btn')?.addEventListener('click', copyCurrentSnapshot);
+  document.getElementById('snapshot-cancel-btn')?.addEventListener('click', cancelSnapshotCapture);
+  document.getElementById('share-stream-stop')?.addEventListener('click', () => {
+    stopSnapshotSharing();
+    document.getElementById('share-copy-btn')?.focus();
+  });
+  // Tab sharing ends with the page.
+  window.addEventListener('pagehide', stopSnapshotSharing);
+  document.getElementById('share-title-input')?.addEventListener('input', scheduleSnapshotRender);
+  document.querySelectorAll('.share-mode-btn').forEach(button => {
+    button.addEventListener('click', () => selectSnapshotMode(button.dataset.mode));
+  });
+  modal?.addEventListener('click', (event) => {
+    if (event.target === modal) closeShareModal();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (isCapturingSnapshot) {
+      cancelSnapshotCapture();
+    } else {
+      closeShareModal();
+    }
+  });
+  // Resolve early so the first shortcut press is matched without delay.
+  getCurrentTabId();
+  loadPreferredSnapshotMode().then(mode => {
+    if (!isShareModalOpen()) snapshotMode = mode;
+  });
+}
+
+// ===== Image Management =====
+const MAX_IMAGE_SIZE = 20 * 1024 * 1024; // 20MB per image
+const MAX_IMAGE_COUNT = 10;
+
+async function addImage(file) {
+  try {
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      showToast('Please select an image file');
+      return false;
+    }
+
+    // Validate file size
+    if (file.size > MAX_IMAGE_SIZE) {
+      showToast('Image size must be less than 20MB');
+      return false;
+    }
+
+    // Validate image count
+    if (uploadedImages.length >= MAX_IMAGE_COUNT) {
+      showToast(`Maximum ${MAX_IMAGE_COUNT} images allowed`);
+      return false;
+    }
+
+    // Convert to base64
+    const dataUrl = await fileToDataUrl(file);
+
+    // Add to uploadedImages array with string ID
+    const imageId = Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9);
+    uploadedImages.push({
+      id: imageId,
+      name: file.name,
+      type: file.type,
+      dataUrl: dataUrl
+    });
+    resetFillRetryState();
+
+    // Render preview
+    renderImagePreviews();
+    return true;
+  } catch (error) {
+    console.error('Error adding image:', error);
+    showToast('Failed to add image');
+    return false;
+  }
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function removeImage(imageId) {
+  uploadedImages = uploadedImages.filter(img => img.id !== imageId);
+  resetFillRetryState();
+  renderImagePreviews();
+}
+
+function clearAllImages() {
+  uploadedImages = [];
+  resetFillRetryState();
+  renderImagePreviews();
+}
+
+function renderImagePreviews() {
+  const container = document.getElementById('image-preview-container');
+
+  if (uploadedImages.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = uploadedImages.map(img => `
+    <div class="image-preview-item" data-image-id="${img.id}">
+      <img src="${img.dataUrl}" alt="${img.name}">
+      <button class="remove-image" onclick="window.removeImageById('${img.id}')" title="Remove">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+  `).join('');
+}
+
+// Expose removeImage to window for onclick handler
+window.removeImageById = (imageId) => {
+  removeImage(imageId);
+};
+
+// Create new chat for all panels
+async function newChatAllProviders() {
+  const newChatBtn = document.getElementById('new-chat-btn');
+
+  // Disable button during operation
+  newChatBtn.disabled = true;
+
+  if (isTemporaryChatModeEnabled) {
+    startTemporaryChatActivationCycle();
+  }
+
+  panels.forEach(panel => {
+    startFreshChatForPanel(panel, { preferInPageNewChat: true });
+  });
+
+  restoreUnifiedInputFocusAfterNewChat();
+  showToast('New chat created for all AIs');
+
+  // Re-enable button
+  setTimeout(() => {
+    newChatBtn.disabled = false;
+  }, 1000);
+}
+
+function scheduleTemporaryChatRetry(panel, delay) {
+  const timerId = setTimeout(() => {
+    if (!tempChatPendingPanelIds.has(panel.id) || !panel.iframe || !panel.iframe.contentWindow) {
+      return;
+    }
+
+    focusUnifiedInput({ force: true });
+    panel.iframe.contentWindow.postMessage({
+      type: 'ENABLE_TEMP_CHAT',
+      providerMode: getPanelProviderMode(panel),
+      context: 'multi-panel'
+    }, '*');
+  }, delay);
+
+  const timerIds = tempChatRetryTimerIds.get(panel.id) || [];
+  timerIds.push(timerId);
+  tempChatRetryTimerIds.set(panel.id, timerIds);
+}
+
+async function temporaryChatAllProviders() {
+  if (isTemporaryChatModeEnabled) {
+    cancelTemporaryChatActivation({ restoreButton: false });
+    setTemporaryChatModeEnabled(false);
+    setTemporaryChatButtonDisabled(true);
+
+    panels.forEach(panel => {
+      if (isTemporaryChatSupportedProvider(panel.providerId)) {
+        reloadPanelIframe(panel, getTemporaryChatNormalUrl(panel.providerId));
+        return;
+      }
+
+      postNewChatToPanel(panel);
+    });
+
+    restoreUnifiedInputFocusAfterNewChat();
+    showToast('Temporary chat disabled');
+
+    scheduleTemporaryChatButtonRestore();
+    return;
+  }
+
+  setTemporaryChatModeEnabled(true);
+  startTemporaryChatActivationCycle();
+
+  panels.forEach(panel => {
+    startFreshChatForPanel(panel);
+  });
+
+  restoreUnifiedInputFocusAfterNewChat();
+
+  showToast('Temporary chat enabled where supported');
+}
+
+// Trigger send buttons only (no text injection) - used after Fill
+async function triggerSendButtons() {
+  const sendBtn = document.getElementById('send-all-btn');
+  const fillBtn = document.getElementById('fill-input-btn');
+  const statusEl = document.getElementById('send-status');
+  const sendFocusRequestId = restoreUnifiedInputFocusAfterSend(getChatgptPanelsWithFrames());
+
+  try {
+    sendBtn.disabled = true;
+    fillBtn.disabled = true;
+    statusEl.textContent = 'Sending...';
+    statusEl.className = 'send-status';
+
+    // Send TRIGGER_SEND message to all panels
+    panels.forEach(panel => {
+      if (panel.iframe && panel.iframe.contentWindow) {
+        panel.iframe.contentWindow.postMessage({
+          type: 'TRIGGER_SEND',
+          requestId: sendFocusRequestId,
+          providerMode: getPanelProviderMode(panel),
+          context: 'multi-panel'
+        }, '*');
+      }
+    });
+
+    // Update status
+    statusEl.textContent = `Sent to ${panels.length} AIs`;
+    statusEl.className = 'send-status success';
+
+    setTimeout(() => {
+      statusEl.textContent = '';
+      statusEl.className = 'send-status';
+    }, 3000);
+  } catch (error) {
+    console.error('Error in triggerSendButtons:', error);
+    statusEl.textContent = 'Error occurred';
+    statusEl.className = 'send-status error';
+    setTimeout(() => {
+      statusEl.textContent = '';
+      statusEl.className = 'send-status';
+    }, 3000);
+  } finally {
+    // Always re-enable buttons
+    sendBtn.disabled = false;
+    fillBtn.disabled = false;
+  }
+}
+
+// ===== Panel Fit =====
+function updatePanelFit(panel) {
+  const container = panel.iframe?.parentElement;
+  if (!container) {
+    return;
+  }
+  panel.fit = updatePanelFitState(panel.fit || createPanelFitState(), {
+    available: container.clientWidth,
+    needed: panel.pageNeededWidth || 0,
+    now: performance.now()
+  });
+  applyPanelFitScale(panel.iframe, getPanelFitScale(panel.fit));
+}
+
+// ===== Layout Management =====
+function setLayout(layout) {
+  if (!LAYOUT_PANEL_COUNTS[layout]) return;
+
+  currentLayout = layout;
+
+  const panelGrid = document.getElementById('panel-grid');
+  panelGrid.className = `layout-${layout}`;
+
+  // Update layout button active states
+  document.querySelectorAll('.layout-option').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.layout === layout);
+  });
+
+  // Adjust panel count if needed
+  const targetCount = LAYOUT_PANEL_COUNTS[layout];
+  // Layout changes arrange existing panels; only Add AI opens another provider.
+
+  // Save layout
+  saveProviderConfiguration();
+
+  // Close modal
+  closeLayoutModal();
+}
+
+async function adjustPanelCount(targetCount) {
+  const enabledProviders = sortDomesticProviders(await getEnabledProviders());
+  const maxAllowedCount = Math.min(targetCount, MAX_PANELS, enabledProviders.length);
+
+  // Remove excess panels
+  while (panels.length > maxAllowedCount) {
+    const panel = panels[panels.length - 1];
+    removePanel(panel.id);
+  }
+
+  // Add missing panels
+  while (panels.length < maxAllowedCount) {
+    // Find a provider not already in use
+    const usedProviders = panels.map(p => p.providerId);
+    const availableProvider = enabledProviders.find(p => !usedProviders.includes(p.id));
+
+    if (availableProvider) {
+      await addPanel(availableProvider.id);
+    }
+  }
+}
+
+// ===== Prompt Library =====
+let currentPromptFilter = 'all'; // 'recent', 'favorites', 'all'
+let currentCategoryFilter = '';
+let selectedPromptForVariables = null;
+
+async function loadPromptLibrary() {
+  await loadCategoryFilter();
+  await renderPromptList();
+}
+
+async function loadCategoryFilter() {
+  const categorySelect = document.getElementById('prompt-category-filter');
+  if (!categorySelect) return;
+
+  try {
+    const prompts = await getPersonalPrompts(getAllPrompts);
+    const categories = [...new Set(prompts.map(p => p.category).filter(Boolean))];
+
+    categorySelect.innerHTML = '<option value="">所有分类</option>' +
+      categories.map(cat => `<option value="${escapeHtml(cat)}">${escapeHtml(cat)}</option>`).join('');
+  } catch (error) {
+    console.error('Error loading categories:', error);
+  }
+}
+
+async function renderPromptList(searchQuery = '') {
+  const promptList = document.getElementById('prompt-list-modal');
+
+  try {
+    let prompts = await getPersonalPrompts(getAllPrompts);
+    if(searchQuery) {
+      const query=searchQuery.toLocaleLowerCase();
+      prompts=prompts.filter(p=>`${p.title} ${p.content}`.toLocaleLowerCase().includes(query));
+    }
+
+    // Apply category filter
+    if (currentCategoryFilter) {
+      prompts = prompts.filter(p => p.category === currentCategoryFilter);
+    }
+
+    if (prompts.length === 0) {
+      promptList.innerHTML = `
+        <div class="prompt-empty">
+          <span class="material-symbols-outlined">auto_awesome</span>
+          <p>${searchQuery ? '没有找到匹配的收藏' : '还没有收藏，点击“新增收藏”保存自己的提示词'}</p>
+        </div>
+      `;
+      return;
+    }
+
+    promptList.innerHTML = prompts.map(prompt => `
+      <div class="prompt-item-modal" data-id="${prompt.id}">
+        ${prompt.isFavorite ? '<div class="prompt-item-favorite"><span class="material-symbols-outlined filled">star</span></div>' : ''}
+        <div class="prompt-item-modal-title">${escapeHtml(prompt.title)}</div>
+        <div class="prompt-item-modal-preview">${escapeHtml(prompt.content.substring(0, 150))}${prompt.content.length > 150 ? '...' : ''}</div>
+        <div class="prompt-item-meta-row">
+          ${prompt.category ? `<span class="prompt-item-category">${escapeHtml(prompt.category)}</span>` : ''}
+          ${prompt.variables && prompt.variables.length > 0 ? `
+            <div class="prompt-item-variables">
+              ${prompt.variables.slice(0, 3).map(v => `<span class="prompt-variable-tag">{${escapeHtml(v)}}</span>`).join('')}
+              ${prompt.variables.length > 3 ? `<span class="prompt-variable-tag">+${prompt.variables.length - 3}</span>` : ''}
+            </div>
+          ` : ''}
+        </div>
+        <div class="my-prompt-actions"><button type="button" data-use="${prompt.id}">填入输入框</button><button type="button" data-edit="${prompt.id}">编辑 / 删除</button></div>
+      </div>
+    `).join('');
+
+    promptList.querySelectorAll('[data-use]').forEach(button=>button.addEventListener('click',async()=>{
+      const prompt=prompts.find(p=>p.id===Number(button.dataset.use));
+      if(prompt)await selectPrompt(prompt);
+    }));
+    promptList.querySelectorAll('[data-edit]').forEach(button=>button.addEventListener('click',()=>openPromptEditor(Number(button.dataset.edit))));
+  } catch (error) {
+    console.error('Error loading prompts:', error);
+    promptList.innerHTML = '<div class="prompt-empty">收藏加载失败，请关闭后重试</div>';
+  }
+}
+
+async function selectPrompt(prompt) {
+  // Record usage
+  try {
+    await recordPromptUsage(prompt.id);
+  } catch (error) {
+    console.error('Error recording prompt usage:', error);
+  }
+
+  // Check if prompt has variables
+  if (prompt.variables && prompt.variables.length > 0) {
+    selectedPromptForVariables = prompt;
+    showVariableModal(prompt);
+  } else {
+    applyPromptToInput(prompt.content);
+    closePromptModal();
+  }
+}
+
+function showVariableModal(prompt) {
+  const modal = document.getElementById('variable-modal');
+  const inputsContainer = document.getElementById('variable-inputs');
+
+  inputsContainer.innerHTML = prompt.variables.map(variable => `
+    <div class="variable-input-group">
+      <label for="var-${escapeHtml(variable)}">${escapeHtml(variable)}</label>
+      <input type="text" id="var-${escapeHtml(variable)}" data-variable="${escapeHtml(variable)}" placeholder="请输入${escapeHtml(variable)}">
+    </div>
+  `).join('');
+
+  modal.style.display = 'flex';
+
+  // Focus first input
+  const firstInput = inputsContainer.querySelector('input');
+  if (firstInput) {
+    setTimeout(() => firstInput.focus(), 100);
+  }
+}
+
+function applyVariables() {
+  if (!selectedPromptForVariables) return;
+
+  let content = selectedPromptForVariables.content;
+  const inputs = document.querySelectorAll('#variable-inputs input');
+
+  inputs.forEach(input => {
+    const variable = input.dataset.variable;
+    const value = input.value || `{${variable}}`;
+    // Replace all occurrences of {variable}
+    content = content.split(`{${variable}}`).join(value);
+  });
+
+  applyPromptToInput(content);
+  closeVariableModal();
+  closePromptModal();
+  selectedPromptForVariables = null;
+}
+
+function applyPromptToInput(content) {
+  const input = document.getElementById('unified-input');
+  if(input.value.trim() && input.value!==content && !confirm('输入框中已有内容，是否替换为这条收藏？'))return false;
+  input.value = content;
+  resetFillRetryState();
+  resizeTextarea();
+  input.focus();
+}
+
+function closeVariableModal() {
+  document.getElementById('variable-modal').style.display = 'none';
+  selectedPromptForVariables = null;
+}
+
+async function searchPromptLibrary(query) {
+  await renderPromptList(query);
+}
+
+// ===== Event Listeners =====
+function setupEventListeners() {
+  const layoutBtn = document.getElementById('layout-btn');
+  if (!layoutBtn) return;
+
+  // Layout button
+  layoutBtn.addEventListener('click', openLayoutModal);
+  document.getElementById('close-layout-modal')?.addEventListener('click', closeLayoutModal);
+
+  // Layout options
+  document.querySelectorAll('.layout-option').forEach(btn => {
+    btn.addEventListener('click', () => setLayout(btn.dataset.layout));
+  });
+
+  // Add panel button
+  document.getElementById('add-panel-btn').addEventListener('click', showAddPanelMenu);
+
+  // Toggle toolbar button and expand bar
+  document.getElementById('toggle-toolbar-btn').addEventListener('click', toggleToolbar);
+  document.getElementById('toolbar-expand-bar').addEventListener('click', toggleToolbar);
+
+  // New Chat button
+  const newChatBtn = document.getElementById('new-chat-btn');
+  const preserveNewChatButtonFocus = (event) => {
+    event.preventDefault();
+  };
+  newChatBtn.addEventListener('pointerdown', preserveNewChatButtonFocus);
+  newChatBtn.addEventListener('mousedown', preserveNewChatButtonFocus);
+  newChatBtn.addEventListener('click', newChatAllProviders);
+
+  // Temporary Chat button
+  const temporaryChatBtn = document.getElementById('temporary-chat-btn');
+  const preserveTemporaryChatButtonFocus = (event) => {
+    event.preventDefault();
+  };
+  temporaryChatBtn.addEventListener('pointerdown', preserveTemporaryChatButtonFocus);
+  temporaryChatBtn.addEventListener('mousedown', preserveTemporaryChatButtonFocus);
+  temporaryChatBtn.addEventListener('click', temporaryChatAllProviders);
+
+  // Settings button
+  document.getElementById('settings-btn').addEventListener('click', () => {
+    chrome.runtime.openOptionsPage();
+  });
+
+  // Toggle open mode button
+  const toggleModeBtn = document.getElementById('toggle-open-mode-btn');
+  if (toggleModeBtn) {
+    toggleModeBtn.addEventListener('click', toggleOpenMode);
+  }
+
+  // Prompt library button
+  document.getElementById('prompt-library-btn').addEventListener('click', openPromptModal);
+  document.getElementById('close-prompt-modal').addEventListener('click', closePromptModal);
+
+  // Image upload button
+  const imageUploadBtn = document.getElementById('image-upload-btn');
+  const imageFileInput = document.getElementById('image-file-input');
+  const inputWrapper = document.querySelector('.input-wrapper');
+
+  imageUploadBtn.addEventListener('click', () => {
+    imageFileInput.click();
+  });
+
+  imageFileInput.addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files);
+    for (const file of files) {
+      await addImage(file);
+    }
+    // Clear input to allow re-uploading the same file
+    e.target.value = '';
+  });
+
+  // Drag and drop support
+  inputWrapper.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    inputWrapper.classList.add('drag-over');
+  });
+
+  inputWrapper.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    inputWrapper.classList.remove('drag-over');
+  });
+
+  inputWrapper.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    inputWrapper.classList.remove('drag-over');
+
+    const files = Array.from(e.dataTransfer.files).filter(file => file.type.startsWith('image/'));
+    for (const file of files) {
+      await addImage(file);
+    }
+  });
+
+  // Prompt search
+  const promptSearch = document.getElementById('prompt-search');
+  let searchTimeout;
+  promptSearch.addEventListener('input', (e) => {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+      const query = e.target.value.trim();
+      if (query) {
+        searchPromptLibrary(query);
+      } else {
+        renderPromptList();
+      }
+    }, 300);
+  });
+
+  // Prompt category filter
+  const categoryFilter = document.getElementById('prompt-category-filter');
+  if (categoryFilter) {
+    categoryFilter.addEventListener('change', (e) => {
+      currentCategoryFilter = e.target.value;
+      renderPromptList();
+    });
+  }
+
+  // Prompt filter buttons
+  const favoritesBtn = document.getElementById('prompt-favorites-btn');
+  if (favoritesBtn) {
+    favoritesBtn.addEventListener('click', () => {
+      currentPromptFilter = currentPromptFilter === 'favorites' ? 'all' : 'favorites';
+      favoritesBtn.classList.toggle('active', currentPromptFilter === 'favorites');
+      document.getElementById('prompt-recent-btn')?.classList.remove('active');
+      renderPromptList();
+    });
+  }
+
+  const recentBtn = document.getElementById('prompt-recent-btn');
+  if (recentBtn) {
+    recentBtn.addEventListener('click', () => {
+      currentPromptFilter = currentPromptFilter === 'recent' ? 'all' : 'recent';
+      recentBtn.classList.toggle('active', currentPromptFilter === 'recent');
+      document.getElementById('prompt-favorites-btn')?.classList.remove('active');
+      renderPromptList();
+    });
+  }
+
+  // Variable modal
+  document.getElementById('close-variable-modal')?.addEventListener('click', closeVariableModal);
+  document.getElementById('cancel-variable-btn')?.addEventListener('click', closeVariableModal);
+  document.getElementById('apply-variable-btn')?.addEventListener('click', applyVariables);
+
+  // Variable modal outside click
+  document.getElementById('variable-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'variable-modal') {
+      closeVariableModal();
+    }
+  });
+
+  // Clear All button
+  document.getElementById('clear-all-btn').addEventListener('click', () => {
+    clearAllInputs();
+  });
+
+  // Fill Input Boxes button (no auto-send)
+  document.getElementById('fill-input-btn').addEventListener('click', () => {
+    const input = document.getElementById('unified-input');
+    broadcastMessage(input.value, false);
+  });
+
+  const sendAllBtn = document.getElementById('send-all-btn');
+  const preserveSendAllButtonFocus = (event) => {
+    event.preventDefault();
+  };
+
+  sendAllBtn.addEventListener('pointerdown', preserveSendAllButtonFocus);
+  sendAllBtn.addEventListener('mousedown', preserveSendAllButtonFocus);
+
+  // Send All button (fill + auto-send)
+  sendAllBtn.addEventListener('click', () => {
+    const input = document.getElementById('unified-input');
+    broadcastMessage(input.value, true);
+  });
+
+  // Input textarea
+  const inputTextarea = document.getElementById('unified-input');
+  let isInputComposing = false;
+  inputTextarea.addEventListener('input', () => {
+    resetFillRetryState();
+    resizeTextarea();
+  });
+  inputTextarea.addEventListener('compositionstart', () => {
+    isInputComposing = true;
+  });
+  inputTextarea.addEventListener('compositionend', () => {
+    isInputComposing = false;
+  });
+  inputTextarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      if (isInputComposing || e.isComposing) {
+        return;
+      }
+      e.preventDefault();
+      broadcastMessage(inputTextarea.value);
+    }
+  });
+
+  // Paste image support (must be after inputTextarea is defined)
+  inputTextarea.addEventListener('paste', async (e) => {
+    const items = Array.from(e.clipboardData.items);
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          await addImage(file);
+        }
+      }
+    }
+  });
+
+  // Prevent iframes from stealing focus from unified input during page load.
+  // Also active during post-send and post-new-chat restore windows.
+  inputTextarea.addEventListener('blur', () => {
+    if (shouldPreserveUnifiedInputFocus()) {
+      focusUnifiedInput();
+    }
+  });
+
+  const cancelNewChatFocusRestoreOnUserIntent = (event) => {
+    if (!isRestoringFocusAfterNewChat) {
+      return;
+    }
+
+    if (isUnifiedInputOrNewChatControl(event.target)) {
+      return;
+    }
+
+    cancelUnifiedInputFocusRestore();
+  };
+
+  document.addEventListener('pointerdown', cancelNewChatFocusRestoreOnUserIntent, true);
+  document.addEventListener('mousedown', cancelNewChatFocusRestoreOnUserIntent, true);
+  document.addEventListener('click', cancelNewChatFocusRestoreOnUserIntent, true);
+  document.addEventListener('focusin', cancelNewChatFocusRestoreOnUserIntent, true);
+  document.addEventListener('keydown', cancelNewChatFocusRestoreOnUserIntent, true);
+
+  const cancelSendFocusRestoreOnUserIntent = (event) => {
+    if (!isRestoringFocusAfterSend) {
+      return;
+    }
+
+    if (isUnifiedInputOrSendControl(event.target)) {
+      return;
+    }
+
+    cancelUnifiedInputFocusRestoreAfterSend();
+  };
+
+  document.addEventListener('pointerdown', cancelSendFocusRestoreOnUserIntent, true);
+  document.addEventListener('mousedown', cancelSendFocusRestoreOnUserIntent, true);
+  document.addEventListener('click', cancelSendFocusRestoreOnUserIntent, true);
+  document.addEventListener('focusin', cancelSendFocusRestoreOnUserIntent, true);
+  document.addEventListener('keydown', cancelSendFocusRestoreOnUserIntent, true);
+  window.addEventListener('message', handleProviderStatusMessage);
+
+  // Layout modal outside click
+  document.getElementById('layout-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'layout-modal') {
+      closeLayoutModal();
+    }
+  });
+
+  // Prompt modal outside click
+  document.getElementById('prompt-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'prompt-modal') {
+      closePromptModal();
+    }
+  });
+
+  // Prompt Editor Modal
+  document.getElementById('close-prompt-editor')?.addEventListener('click', closePromptEditor);
+  document.getElementById('cancel-prompt-editor')?.addEventListener('click', closePromptEditor);
+  document.getElementById('save-prompt-btn')?.addEventListener('click', savePromptFromEditor);
+  document.getElementById('delete-prompt-btn')?.addEventListener('click', deletePromptFromEditor);
+  
+  // New Prompt button
+  document.getElementById('new-prompt-btn')?.addEventListener('click', () => openPromptEditor());
+
+  // Prompt Editor Modal outside click
+  document.getElementById('prompt-editor-modal')?.addEventListener('click', (e) => {
+    if (e.target.id === 'prompt-editor-modal') {
+      closePromptEditor();
+    }
+  });
+}
+
+function resizeTextarea() {
+  const textarea = document.getElementById('unified-input');
+  textarea.style.height = 'auto';
+  textarea.style.height = Math.min(textarea.scrollHeight, 150) + 'px';
+}
+
+// ===== Modal Functions =====
+function openLayoutModal() {
+  const modal = document.getElementById('layout-modal');
+  modal.style.display = 'flex';
+
+  // Mark current layout as active
+  document.querySelectorAll('.layout-option').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.layout === currentLayout);
+  });
+}
+
+function closeLayoutModal() {
+  document.getElementById('layout-modal').style.display = 'none';
+}
+
+function openPromptModal() {
+  const modal = document.getElementById('prompt-modal');
+  modal.style.display = 'flex';
+  loadPromptLibrary();
+}
+
+function closePromptModal() {
+  document.getElementById('prompt-modal').style.display = 'none';
+  document.getElementById('prompt-search').value = '';
+  // Reset filters to show all prompts on next open
+  currentPromptFilter = 'all';
+  currentCategoryFilter = '';
+}
+
+// ===== Provider Switcher =====
+async function showProviderSwitcher(panelId) {
+  const enabledProviders = sortDomesticProviders(await getEnabledProviders());
+  const panel = panels.find(p => p.id === panelId);
+  if (!panel) return;
+  const palette = getDropdownThemePalette();
+
+  // Create a simple dropdown menu
+  const menu = document.createElement('div');
+  menu.className = 'provider-switcher-menu';
+  menu.style.cssText = `
+    position: fixed;
+    background: ${palette.menuBackground};
+    border: 1px solid ${palette.menuBorder};
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    z-index: 1000;
+    min-width: 160px;
+    padding: 8px 0;
+  `;
+
+  menu.innerHTML = enabledProviders.map(provider => `
+    <div class="provider-switcher-item" data-provider-id="${provider.id}" style="
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      cursor: pointer;
+      font-size: 14px;
+      color: ${provider.id === panel.providerId ? palette.selectedText : palette.menuText};
+      ${provider.id === panel.providerId ? `background: ${palette.selectedBackground};` : ''}
+    ">
+      <img src="${getThemeAwareProviderIcon(provider)}" alt="${provider.name}" style="width: 20px; height: 20px;" data-provider-id="${provider.id}">
+      <span>${provider.name}</span>
+    </div>
+  `).join('');
+
+  // Position menu near the panel
+  const panelEl = document.getElementById(panelId);
+  const rect = panelEl.querySelector('.switch-provider-btn').getBoundingClientRect();
+  menu.style.top = rect.bottom + 4 + 'px';
+  menu.style.left = rect.left + 'px';
+
+  document.body.appendChild(menu);
+
+  // Handle item clicks
+  menu.querySelectorAll('.provider-switcher-item').forEach(item => {
+    item.addEventListener('click', () => {
+      noteProviderUse(item.dataset.providerId);
+      switchPanelProvider(panelId, item.dataset.providerId);
+      menu.remove();
+    });
+
+    item.addEventListener('mouseenter', () => {
+      if (item.dataset.providerId === panel.providerId) {
+        item.style.background = palette.selectedBackground;
+        item.style.color = palette.selectedText;
+        return;
+      }
+
+      item.style.background = palette.itemHoverBackground;
+      item.style.color = palette.menuText;
+    });
+    item.addEventListener('mouseleave', () => {
+      if (item.dataset.providerId === panel.providerId) {
+        item.style.background = palette.selectedBackground;
+        item.style.color = palette.selectedText;
+      } else {
+        item.style.background = '';
+        item.style.color = palette.menuText;
+      }
+    });
+  });
+
+  // Close on outside click
+  const closeMenu = (e) => {
+    if (!menu.contains(e.target)) {
+      menu.remove();
+      document.removeEventListener('click', closeMenu);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', closeMenu), 0);
+}
+
+async function showAddPanelMenu() {
+  if (panels.length >= MAX_PANELS) {
+    showToast(`Maximum number of panels reached (${MAX_PANELS})`);
+    return;
+  }
+
+  const enabledProviders = sortDomesticProviders(await getEnabledProviders());
+  const usedProviders = panels.map(p => p.providerId);
+  const availableProviders = enabledProviders.filter(p => !usedProviders.includes(p.id));
+
+  if (availableProviders.length === 0) {
+    showToast('All providers are already in use');
+    return;
+  }
+
+  const btn = document.getElementById('add-panel-btn');
+  const rect = btn.getBoundingClientRect();
+  const palette = getDropdownThemePalette();
+
+  const menu = document.createElement('div');
+  menu.className = 'add-panel-menu';
+  menu.style.cssText = `
+    position: fixed;
+    top: ${rect.bottom + 4}px;
+    left: ${rect.left}px;
+    background: ${palette.menuBackground};
+    border: 1px solid ${palette.menuBorder};
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    z-index: 1000;
+    min-width: 160px;
+    padding: 8px 0;
+  `;
+
+  menu.innerHTML = availableProviders.map(provider => `
+    <div class="add-panel-item" data-provider-id="${provider.id}" style="
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      cursor: pointer;
+      font-size: 14px;
+      color: ${palette.menuText};
+    ">
+      <img src="${getThemeAwareProviderIcon(provider)}" alt="${provider.name}" style="width: 20px; height: 20px;" data-provider-id="${provider.id}">
+      <span>${provider.name}</span>
+    </div>
+  `).join('');
+
+  document.body.appendChild(menu);
+
+  menu.querySelectorAll('.add-panel-item').forEach(item => {
+    item.addEventListener('click', () => {
+      noteProviderUse(item.dataset.providerId);
+      addPanel(item.dataset.providerId);
+      menu.remove();
+    });
+
+    item.addEventListener('mouseenter', () => {
+      item.style.background = palette.itemHoverBackground;
+      item.style.color = palette.menuText;
+    });
+    item.addEventListener('mouseleave', () => {
+      item.style.background = '';
+      item.style.color = palette.menuText;
+    });
+  });
+
+  const closeMenu = (e) => {
+    if (!menu.contains(e.target)) {
+      menu.remove();
+      document.removeEventListener('click', closeMenu);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', closeMenu), 0);
+}
+
+// ===== Utility Functions =====
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function showToast(message) {
+  const toast = document.createElement('div');
+  toast.className = 'panelize-toast';
+  toast.textContent = message;
+  toast.style.cssText = `
+    position: fixed;
+    bottom: 100px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #333;
+    color: white;
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-size: 14px;
+    z-index: 10000;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  `;
+
+  document.body.appendChild(toast);
+
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transition = 'opacity 0.3s';
+    setTimeout(() => toast.remove(), 300);
+  }, 2000);
+}
+
+// ===== Prompt Editor Functions =====
+
+// 打开提示词编辑器（新增或编辑）
+function openPromptEditor(promptId = null) {
+  currentEditingPromptId = promptId;
+  const modal = document.getElementById('prompt-editor-modal');
+  const title = document.getElementById('prompt-editor-title');
+  const deleteBtn = document.getElementById('delete-prompt-btn');
+
+  if (promptId) {
+    // 编辑模式
+    title.textContent = '编辑收藏';
+    deleteBtn.style.display = 'block';
+    // 加载现有提示词数据
+    loadPromptForEditing(promptId);
+  } else {
+    // 新增模式
+    title.textContent = '新增收藏';
+    deleteBtn.style.display = 'none';
+    clearPromptEditor();
+    document.getElementById('prompt-content-input').value = document.getElementById('unified-input').value;
+  }
+
+  modal.style.display = 'flex';
+}
+
+// 加载提示词数据到编辑器
+async function loadPromptForEditing(promptId) {
+  try {
+    const prompt = await getPrompt(promptId);
+    if (prompt) {
+      document.getElementById('prompt-title-input').value = prompt.title || '';
+      document.getElementById('prompt-content-input').value = prompt.content || '';
+      document.getElementById('prompt-category-input').value = prompt.category || '';
+      document.getElementById('prompt-tags-input').value = prompt.tags ? prompt.tags.join(', ') : '';
+    }
+  } catch (error) {
+    console.error('Error loading prompt for editing:', error);
+    showToast('加载收藏失败');
+  }
+}
+
+// 清空编辑器
+function clearPromptEditor() {
+  document.getElementById('prompt-title-input').value = '';
+  document.getElementById('prompt-content-input').value = '';
+  document.getElementById('prompt-category-input').value = '';
+  document.getElementById('prompt-tags-input').value = '';
+}
+
+// 关闭编辑器
+function closePromptEditor() {
+  document.getElementById('prompt-editor-modal').style.display = 'none';
+  currentEditingPromptId = null;
+}
+
+// 保存提示词
+async function savePromptFromEditor() {
+  const title = document.getElementById('prompt-title-input').value.trim();
+  const content = document.getElementById('prompt-content-input').value.trim();
+  const category = document.getElementById('prompt-category-input').value.trim() || '未分类';
+  const tagsStr = document.getElementById('prompt-tags-input').value.trim();
+
+  if (!title || !content) {
+    alert('请填写标题和提示词内容');
+    return;
+  }
+
+  const tags = tagsStr ? tagsStr.split(',').map(t => t.trim()).filter(Boolean) : [];
+
+  const promptData = { title, content, category, tags, isPersonal: true, isFavorite: true, variables: [...new Set([...content.matchAll(/\{([\p{L}\p{N}_ -]{1,50})\}/gu)].map(m=>m[1]))] };
+
+  try {
+    if (currentEditingPromptId) {
+      await updatePrompt(currentEditingPromptId, promptData);
+      showToast('收藏已更新');
+    } else {
+      await savePrompt(promptData);
+      showToast('收藏已保存');
+    }
+
+    closePromptEditor();
+    await loadPromptLibrary();
+  } catch (error) {
+    console.error('Error saving prompt:', error);
+    showToast('保存失败，请重试');
+  }
+}
+
+// 删除提示词
+async function deletePromptFromEditor() {
+  if (!currentEditingPromptId) return;
+
+  if (confirm('确定删除这条收藏吗？')) {
+    try {
+      await deletePrompt(currentEditingPromptId);
+      showToast('收藏已删除');
+      closePromptEditor();
+      await renderPromptList();
+    } catch (error) {
+      console.error('Error deleting prompt:', error);
+      showToast('删除失败，请重试');
+    }
+  }
+}
+
+// Initialize on load
+init();

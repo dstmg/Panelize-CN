@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="optionsPageTitle">Panelize - Settings</title>
+  <link rel="stylesheet" href="options.css">
+  <link rel="stylesheet" href="../assets/local-icons.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1 data-i18n="headerSettingsTitle">Settings: Panelize</h1>
+      <p data-i18n="headerSettingsSubtitle">Customize your multi-AI comparison experience</p>
+    </header>
+
+    <div class="content">
+      <!-- Status Messages -->
+      <div id="status-success" class="status-message status-success"></div>
+      <div id="status-error" class="status-message status-error"></div>
+
+      <!-- Toast Notifications -->
+      <div id="toast-container" class="toast-container"></div>
+
+      <!-- T051: Theme Settings -->
+      <section class="section">
+        <h2 class="section-title" data-i18n="sectionAppearance">Appearance</h2>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelTheme">Theme</div>
+            <div class="setting-description" data-i18n="descTheme">Choose your preferred color scheme</div>
+          </div>
+          <div class="setting-control">
+            <select id="theme-select">
+              <option value="auto" data-i18n="themeAuto">Auto (System)</option>
+              <option value="light" data-i18n="themeLight">Light</option>
+              <option value="dark" data-i18n="themeDark">Dark</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelLanguage">Language</div>
+            <div class="setting-description" data-i18n="descLanguage">Choose your preferred interface language</div>
+          </div>
+          <div class="setting-control">
+            <select id="language-select">
+              <option value="en" data-i18n="langEnglish">English</option>
+              <option value="zh_CN" data-i18n="langSimplifiedChinese">简体中文 (Simplified Chinese)</option>
+              <option value="zh_TW" data-i18n="langTraditionalChinese">繁體中文 (Traditional Chinese)</option>
+              <option value="ko" data-i18n="langKorean">한국어 (Korean)</option>
+              <option value="ja" data-i18n="langJapanese">日本語 (Japanese)</option>
+              <option value="es" data-i18n="langSpanish">Español (Spanish)</option>
+              <option value="fr" data-i18n="langFrench">Français (French)</option>
+              <option value="de" data-i18n="langGerman">Deutsch (German)</option>
+              <option value="it" data-i18n="langItalian">Italiano (Italian)</option>
+              <option value="ru" data-i18n="langRussian">Русский (Russian)</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <!-- Multi-Panel Comparison -->
+      <section class="section">
+        <h2 class="section-title" data-i18n="sectionMultiPanel">Multi-Panel Comparison</h2>
+        <p style="font-size: 14px; color: #666; margin-bottom: 16px;" data-i18n="descMultiPanel">
+          Compare responses from multiple AI providers side by side in a full-page view
+        </p>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelOpenMode">Open Mode</div>
+            <div class="setting-description" data-i18n="descOpenMode">Choose how to open Panelize when clicking the icon or using shortcuts</div>
+          </div>
+          <div class="setting-control">
+            <select id="open-mode-select">
+              <option value="tab" data-i18n="optionTabMode">Tab (New Tab)</option>
+              <option value="popup" data-i18n="optionPopupMode">Popup Window</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelDefaultLayout">Default Layout</div>
+            <div class="setting-description" data-i18n="descDefaultLayout">Choose the default panel arrangement</div>
+          </div>
+          <div class="setting-control">
+            <select id="multi-panel-layout-select">
+              <option value="1x1">1x1 Single Panel (1 panel)</option>
+              <option value="1x2">1x2 Two Columns (2 panels)</option>
+              <option value="1x3" selected>1x3 Three Columns (3 panels)</option>
+              <option value="1x4">1x4 Four Columns (4 panels)</option>
+              <option value="1x5">1x5 Five Columns (5 panels)</option>
+              <option value="1x6">1x6 Six Columns (6 panels)</option>
+              <option value="1x7">1x7 Seven Columns (7 panels)</option>
+              <option value="1x8">1x8 Eight Columns (8 panels)</option>
+              <option value="1x9">1x9 Nine Columns (9 panels)</option>
+              <option value="1x10">1x10 Ten Columns (10 panels)</option>
+              <option value="1x11">1x11 Eleven Columns (11 panels)</option>
+              <option value="1x12">1x12 Twelve Columns (12 panels)</option>
+              <option value="2x1">2x1 Stacked (2 panels)</option>
+              <option value="2x2">2x2 Grid (4 panels)</option>
+              <option value="2x3">2x3 Grid (6 panels)</option>
+              <option value="2x4">2x4 Grid (8 panels)</option>
+              <option value="2x5">2x5 Grid (10 panels)</option>
+              <option value="2x6">2x6 Grid (12 panels)</option>
+              <option value="3x1">3x1 Three Rows (3 panels)</option>
+              <option value="3x2">3x2 Grid (6 panels)</option>
+              <option value="3x3">3x3 Grid (9 panels)</option>
+              <option value="4x2">4x2 Grid (8 panels)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelShareWatermark">Show watermark on shared images</div>
+            <div class="setting-description" data-i18n="descShareWatermark">
+              Add a "Compared with Panelize · panelize.dev" strip to snapshots taken with the Share button
+            </div>
+          </div>
+          <div class="setting-control">
+            <label class="switch">
+              <input type="checkbox" id="share-watermark-toggle" checked />
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- T052-T053: Provider Settings -->
+      <section class="section">
+        <h2 class="section-title" data-i18n="sectionProviders">AI Providers</h2>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelEnabledProviders">Enabled Providers</div>
+            <div class="setting-description" data-i18n="descEnabledProviders">Select which AI providers appear in Panelize</div>
+          </div>
+        </div>
+
+        <div class="provider-list" id="provider-list">
+          <!-- Provider items will be dynamically generated -->
+        </div>
+      </section>
+
+      <!-- Keyboard Settings -->
+      <section class="section">
+        <h2 class="section-title" data-i18n="sectionKeyboard">Keyboard</h2>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelEnableKeyboardShortcut">Enable Keyboard Shortcut</div>
+            <div class="setting-description" data-i18n="descEnableKeyboardShortcut">
+              Toggle the global shortcut that opens Panelize from anywhere in the browser.
+            </div>
+          </div>
+          <div class="setting-control">
+            <label class="switch">
+              <input type="checkbox" id="keyboard-shortcut-toggle" checked />
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelDefaultShortcuts">Default Shortcuts</div>
+            <div class="setting-description" data-i18n-html="descDefaultShortcuts">
+              Command+Shift+E (Ctrl+Shift+E on Windows/Linux) opens Panelize.<br>
+              Command+Shift+L (Ctrl+Shift+L on Windows/Linux) opens Prompt Library.
+            </div>
+          </div>
+          <div class="setting-control">
+            <button class="btn btn-secondary" id="open-shortcuts-btn" data-i18n="btnOpenShortcuts">Open Shortcuts</button>
+          </div>
+        </div>
+
+        <div class="setting-item" id="edge-shortcut-helper" style="display: none;">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelEdgeShortcutHelper">Confirm in Microsoft Edge</div>
+            <div class="setting-description" data-i18n="descEdgeShortcutHelper">
+              Edge requires you to confirm the shortcut once. Click configure to jump straight to the Edge shortcuts page.
+            </div>
+          </div>
+          <div class="setting-control">
+            <button class="btn btn-secondary" id="open-edge-shortcuts-btn" data-i18n="btnConfigureEdge">Configure in Edge</button>
+          </div>
+        </div>
+
+        <!-- Enter Key Behavior -->
+        <p style="font-size: 14px; color: #666; margin-top: 24px; margin-bottom: 8px;" data-i18n="descEnterBehavior1">
+          Customize how Enter and modifier keys work when typing in AI provider input fields.
+        </p>
+        <p style="font-size: 13px; color: #888; margin-bottom: 16px;" data-i18n-html="descEnterBehavior2">
+          <strong>Applies to:</strong> ChatGPT, Claude, Gemini, Grok, DeepSeek, Kimi, Doubao, Qwen (China), Qwen (Global), Zhipu (China), Z.ai (Global), and Google (AI Mode).
+        </p>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelEnableEnterCustom">Enable Enter Key Customization</div>
+            <div class="setting-description" data-i18n="descEnableEnterCustom">
+              When enabled, modifies Enter key behavior across all supported AI providers
+            </div>
+          </div>
+          <div class="setting-control">
+            <label class="switch">
+              <input type="checkbox" id="enter-behavior-toggle" checked />
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div id="enter-behavior-settings">
+          <div class="setting-item">
+            <div class="setting-info">
+              <div class="setting-label" data-i18n="labelPreset">Preset</div>
+              <div class="setting-description" data-i18n="descPreset">Choose a common key combination pattern</div>
+            </div>
+            <div class="setting-control">
+              <select id="enter-preset-select">
+                <option value="default" selected data-i18n="presetDefault">Default (Enter=Send, Shift+Enter=Newline)</option>
+                <option value="swapped" data-i18n="presetSwapped">Swapped (Enter=Newline, Shift+Enter=Send)</option>
+                <option value="slack" data-i18n="presetSlack">Slack-style (Enter=Send, Ctrl+Enter=Newline)</option>
+                <option value="discord" data-i18n="presetDiscord">Discord-style (Enter=Newline, Ctrl+Enter=Send)</option>
+                <option value="custom" data-i18n="presetCustom">Custom</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="custom-enter-settings" style="display: none;">
+            <div class="key-mapping-card">
+              <h3 data-i18n="labelInsertNewline">Insert Newline</h3>
+              <div class="key-mapping-controls">
+                <label>
+                  <input type="checkbox" id="newline-shift" /> <span data-i18n="keyShift">Shift</span>
+                </label>
+                <label>
+                  <input type="checkbox" id="newline-ctrl" /> <span data-i18n="keyCtrl">Ctrl</span>
+                </label>
+                <label>
+                  <input type="checkbox" id="newline-alt" /> <span data-i18n="keyAlt">Alt</span>
+                </label>
+                <label>
+                  <input type="checkbox" id="newline-meta" /> <span data-i18n="keyMeta">⌘/Win</span>
+                </label>
+                <span style="margin-left: auto;" data-i18n="keyPlusEnter">+ Enter</span>
+              </div>
+            </div>
+
+            <div class="key-mapping-card">
+              <h3 data-i18n="labelSendMessage">Send Message</h3>
+              <div class="key-mapping-controls">
+                <label>
+                  <input type="checkbox" id="send-shift" /> <span data-i18n="keyShift">Shift</span>
+                </label>
+                <label>
+                  <input type="checkbox" id="send-ctrl" /> <span data-i18n="keyCtrl">Ctrl</span>
+                </label>
+                <label>
+                  <input type="checkbox" id="send-alt" /> <span data-i18n="keyAlt">Alt</span>
+                </label>
+                <label>
+                  <input type="checkbox" id="send-meta" /> <span data-i18n="keyMeta">⌘/Win</span>
+                </label>
+                <span style="margin-left: auto;" data-i18n="keyPlusEnter">+ Enter</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <section class="section"><h2 class="section-title">我的收藏</h2><p>在 AI 对比台输入框旁点击“我的收藏”，新增、编辑或使用自己的提示词。收藏保存在当前浏览器本地，可通过下方“导出”备份。</p></section>
+
+      <!-- Content Sending Settings -->
+      <section class="section">
+        <h2 class="section-title" data-i18n="sectionContentSending">Content Sending</h2>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelSourceUrlPlacement">Source URL Placement</div>
+            <div class="setting-description" data-i18n="descSourceUrlPlacement">
+              Choose where to place the source URL when sending selected text or page content to AI providers
+            </div>
+          </div>
+          <div class="setting-control">
+            <select id="source-url-placement-select">
+              <option value="none" data-i18n="urlPlacementNone">Don't include URL</option>
+              <option value="end" data-i18n="urlPlacementEnd">At end (after content)</option>
+              <option value="beginning" data-i18n="urlPlacementBeginning">At beginning (before content)</option>
+            </select>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- T056-T064: Data Management -->
+      <section class="section">
+        <h2 class="section-title" data-i18n="sectionDataManagement">Data Management</h2>
+
+        <div class="data-stats" id="data-stats">
+          <div class="data-stat-item">
+            <span class="data-stat-label" data-i18n="statPrompts">Prompts</span>
+            <span class="data-stat-value" id="stat-prompts">0</span>
+          </div>
+          <div class="data-stat-item">
+            <span class="data-stat-label" data-i18n="statStorageUsed">Storage Used</span>
+            <span class="data-stat-value" id="stat-storage">~0 KB</span>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelExportData">Export Data</div>
+            <div class="setting-description" data-i18n="descExportData">Download all prompts and settings as JSON</div>
+          </div>
+          <div class="setting-control">
+            <button class="btn btn-secondary" id="export-btn" data-i18n="btnExport">Export</button>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelImportData">Import Data</div>
+            <div class="setting-description" data-i18n="descImportData">Restore prompts and settings from JSON file</div>
+          </div>
+          <div class="setting-control">
+            <input type="file" id="import-file" accept=".json" style="display: none;" />
+            <button class="btn btn-secondary" id="import-btn" data-i18n="btnImport">Import</button>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- Danger Zone -->
+      <section class="section">
+        <h2 class="section-title" style="color: #d32f2f;" data-i18n="sectionDangerZone">Danger Zone</h2>
+        <p style="font-size: 14px; color: #d32f2f; margin-bottom: 16px;" data-i18n="descDangerZone">
+          These actions cannot be undone. Use with caution.
+        </p>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelClearPrompts">Clear Prompts</div>
+            <div class="setting-description" data-i18n="descClearPrompts">Delete all prompts from your library</div>
+          </div>
+          <div class="setting-control">
+            <button class="btn btn-danger" id="clear-prompts-btn" data-i18n="btnClear">Clear</button>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <div class="setting-label" data-i18n="labelResetSettings">Reset Settings</div>
+            <div class="setting-description" data-i18n="descResetSettings">Reset all settings to defaults</div>
+          </div>
+          <div class="setting-control">
+            <button class="btn btn-danger" id="reset-settings-btn" data-i18n="btnReset">Reset</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- About Section -->
+      <section class="section">
+        <h2 class="section-title" data-i18n="sectionAbout">About</h2>
+
+        <div class="about-info">
+          <div class="version-display">
+            <div class="version" id="version">Version 1.0.0</div>
+            <div class="commit-hash" id="commit-hash" data-i18n="labelLoading">Loading...</div>
+          </div>
+
+          <div class="version-actions">
+            <button class="btn btn-secondary" id="check-updates-btn" data-i18n="btnCheckUpdates">Check for Updates</button>
+          </div>
+          <p>本地中文版更新请使用本项目发布包；上游版本检查只适用于原版 Panelize。</p>
+
+          <div id="update-status" class="update-status" style="display: none;"></div>
+
+          <div class="version-download">
+            <a href="https://github.com/Manho/Panelize/releases/latest"
+               id="download-latest-link"
+               target="_blank"
+               rel="noopener noreferrer"
+               data-i18n="linkDownloadLatest">Download Latest Version</a>
+          </div>
+
+          <p style="font-size: 14px; color: #666; margin-bottom: 8px; margin-top: 16px;" data-i18n="descAbout1">
+            Panelize lets you compare multiple AI chatbots side-by-side in one window.
+          </p>
+          <p style="font-size: 12px; color: #999;" data-i18n="descAbout2">
+            Built with privacy-first architecture. All data stored locally.
+          </p>
+          <div class="author-cards">
+            <article class="author-card"><img src="../assets/author-wechat.png" alt="个人微信二维码" loading="lazy"><h3>添加微信</h3><p>交流建议与使用反馈</p></article>
+            <article class="author-card"><img src="../assets/author-official-account.jpg" alt="微信公众号二维码" loading="lazy"><h3>关注公众号</h3><p>获取更新与相关内容</p></article>
+          </div>
+          <section class="quick-guide"><h3>快速开始</h3><ol><li>先在各 AI 面板登录账号。</li><li>输入框提问，或打开“我的收藏”新增自己的提示词。</li><li>需要发送时先检查参与平台和内容，再点击发送。</li><li>点击“回答对比”，核对原文、预览目标和指令后确认分析。</li><li>可保存对比结果，也可导出 Markdown 或分享摘要图。</li></ol><p>登录状态由各 AI 网站管理；收藏和保存的对比记录留在本机浏览器，可用设置页导出备份。</p></section>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,183 @@
+# Panelize
+
+<p align="center">
+  <a href="README.md"><strong>English</strong></a> |
+  <a href="README.zh-CN.md"><strong>简体中文</strong></a> |
+  <a href="README.ja.md"><strong>日本語</strong></a>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/promo-zh.gif" alt="Panelize 演示：一次提问，并排对比 ChatGPT、Claude、Gemini、DeepSeek 的回答" width="800">
+  <br>
+  <a href="https://youtu.be/rL9m86Z4f9Y">▶ 观看高清视频</a> · <a href="https://panelize.dev/zh/">🌐 官网 panelize.dev</a>
+</p>
+
+<p align="center">
+  <strong>告别反复切换标签页，一次提问并排对比多个 AI 回答。</strong>
+</p>
+
+<p align="center">
+  <a href="https://chromewebstore.google.com/detail/panelize/iokalaafkmjffolodkkgbbccmofbglii"><img src="https://img.shields.io/chrome-web-store/v/iokalaafkmjffolodkkgbbccmofbglii?label=Chrome%20Web%20Store&color=4285F4" alt="Chrome Web Store version"></a>
+  <a href="https://chromewebstore.google.com/detail/panelize/iokalaafkmjffolodkkgbbccmofbglii"><img src="https://img.shields.io/chrome-web-store/users/iokalaafkmjffolodkkgbbccmofbglii?color=brightgreen" alt="Chrome Web Store users"></a>
+  <a href="https://chromewebstore.google.com/detail/panelize/iokalaafkmjffolodkkgbbccmofbglii"><img src="https://img.shields.io/chrome-web-store/rating/iokalaafkmjffolodkkgbbccmofbglii" alt="Chrome Web Store rating"></a>
+  <a href="https://github.com/Manho/Panelize/stargazers"><img src="https://img.shields.io/github/stars/Manho/Panelize?style=flat" alt="GitHub stars"></a>
+  <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License">
+  <img src="https://img.shields.io/badge/Edge-supported-0078D7.svg" alt="Edge">
+</p>
+
+<p align="center">
+  <a href="https://chromewebstore.google.com/detail/panelize/iokalaafkmjffolodkkgbbccmofbglii"><img src="https://img.shields.io/badge/%E5%85%8D%E8%B4%B9%E6%B7%BB%E5%8A%A0%E5%88%B0%20Chrome-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white" alt="免费添加到 Chrome"></a>
+</p>
+
+<p align="center">
+  <sub>免费 · 无需 API Key · 直接使用你已登录的 AI 账号</sub><br>
+  <sub>如果 Panelize 帮你省了时间，点个 ⭐ 能让更多人看到它。</sub>
+</p>
+
+---
+
+## 为什么选择 Panelize？
+
+Panelize 是一个免费、开源的 Chrome / Edge 扩展：一次输入，同时发给 ChatGPT、Claude、Gemini、DeepSeek、Kimi、豆包等 AI，并在同一个窗口里并排显示它们的回答。每个面板加载的都是官方网站，直接使用你已登录的账号，不需要 API Key，也不用额外订阅。
+
+还在把同一个 Prompt 复制到多个 AI 标签页里逐个比较吗？
+
+**Panelize 让你在一个窗口里，一次发送，直接横向对比多个 AI 的答案。**
+
+<p align="center">
+  <img src="assets/screenshots/main-panel.png" alt="Panelize 主界面" width="800">
+</p>
+
+---
+
+## 核心功能
+
+### 一次提问，同时对比
+
+在统一输入框中输入一次内容，就能同时发送到 ChatGPT、Claude、Gemini、Grok、Doubao、DeepSeek、Kimi、Qwen、Zhipu (China)、Z.ai (Global)、元宝、Google。
+
+### 灵活布局
+
+支持 22 种布局。快速双模型对比可用 1×2，最多可用 1×12 或 2×6 同时对比 12 个模型。
+
+<p align="center">
+  <img src="assets/screenshots/select-layout.png" alt="布局选择" width="600">
+</p>
+
+### 零配置
+
+不需要 API Key，也不需要额外账号。通常在浏览器里登录对应平台即可使用。
+
+### Prompt Library
+
+可保存常用提示词，并支持 `{topic}` 这类变量占位符，复用更高效。
+
+### 隐私优先
+
+- 支持在兼容的平台上一键开启隐私模式
+- 数据保留在本地浏览器
+- 无追踪、无埋点、无数据上传
+- 完全开源，可自行审阅代码
+
+---
+
+## 支持的 AI 平台
+
+- ChatGPT
+- Claude
+- Gemini
+- Grok
+- Doubao
+- DeepSeek
+- Kimi
+- Qwen（中国版）
+- Qwen（海外版）
+- Zhipu (China)
+- Z.ai (Global)
+- 元宝
+- Google
+
+<p align="center">
+  <img src="assets/screenshots/settings.png" alt="设置与平台管理" width="700">
+</p>
+
+---
+
+## 安装
+
+### Chrome Web Store（推荐）
+
+1. 打开 [Chrome Web Store 页面](https://chromewebstore.google.com/detail/panelize/iokalaafkmjffolodkkgbbccmofbglii)
+2. 点击 **Add to Chrome**
+3. 安装完成后按 `Cmd/Ctrl + Shift + E` 打开 Panelize
+
+> **Edge 也可用：** 可直接从 Chrome Web Store 安装。
+
+<details>
+<summary><strong>手动安装（开发者）</strong></summary>
+
+1. 下载本仓库源码
+2. 打开 `chrome://extensions/`（或 `edge://extensions/`）
+3. 开启“开发者模式”
+4. 点击“加载已解压的扩展程序”，选择项目目录
+
+</details>
+
+---
+
+## 快速开始
+
+1. **先登录各平台账号**：先在普通网页标签页登录 ChatGPT / Claude 等
+2. **按 `Cmd/Ctrl + Shift + E`**：打开 Panelize
+3. **选择布局**：按需求选择面板数量与布局
+4. **输入并发送**：一次发送到所有面板
+
+---
+
+## 快捷键
+
+| 操作 | 快捷键 |
+|------|--------|
+| 打开 Panelize | `Cmd/Ctrl + Shift + E` |
+| 打开 Prompt Library | `Cmd/Ctrl + Shift + L` |
+
+可在 `chrome://extensions/shortcuts` 自定义。
+
+---
+
+## 常见问题
+
+**怎样同时问 ChatGPT、Claude 和 DeepSeek 同一个问题？**
+→ 安装 Panelize，按 `Cmd/Ctrl + Shift + E` 打开，选好 AI 和布局，输入问题后点 **Send All**，每个 AI 的回答会显示在各自的面板里。
+
+**Panelize 免费吗？需要 API Key 吗？**
+→ 免费，MIT 开源。不需要 API Key：每个面板就是官方网站，用你平时登录的账号。ChatGPT Plus、Claude Pro 等付费套餐照常可用。
+
+**和 ChatHub、ChatALL 有什么区别？**
+→ ChatHub 和 ChatALL 是把多个模型接到同一个聊天界面里；Panelize 直接显示各家官网，所以你的套餐、模型选择和聊天记录都保留在各自账号里。
+
+**AI 页面显示登录状态？**
+→ 先在普通标签页登录该平台，再刷新 Panelize。
+
+**快捷键无效？**
+→ 到 `chrome://extensions/shortcuts` 检查冲突。
+
+**需要帮助？**
+→ [提交 Issue](https://github.com/Manho/Panelize/issues)
+
+---
+
+## 贡献
+
+欢迎反馈与贡献：
+
+- 🐛 提交 Bug
+- 💡 提出功能建议
+- 🌍 参与更多语言翻译
+- 🔧 提交 Pull Request
+
+---
+
+## License
+
+MIT License，详见 [LICENSE](LICENSE)。
