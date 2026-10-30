@@ -8,7 +8,7 @@ directories=['_locales','assets','background','content-scripts','data','icons','
 with zipfile.ZipFile(out,'w',zipfile.ZIP_DEFLATED) as z:
  for name in directories:
   for file in (root/name).rglob('*'):
-   if file.is_file():z.write(file,file.relative_to(root))
+   if file.is_file() and 'screenshots' not in file.relative_to(root).parts:z.write(file,file.relative_to(root))
  for name in ['manifest.json','LICENSE','README.md','PRIVACY.md']:z.write(root/name,name)
 assert zipfile.ZipFile(out).testzip() is None
 print(out)
