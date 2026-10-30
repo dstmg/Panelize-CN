@@ -4,6 +4,10 @@
 
 这是基于 [Manho/Panelize](https://github.com/Manho/Panelize) 的中文改进版，基线提交 `fb9cc70d4c38bf13a5ebb7bf4b76abad107ce2c1`。不是上游官方发布，也不是从零开发的独立产品。原作者 Xiaolai、Wenhao 的版权与 MIT 许可完整保留。
 
+![Panelize CN 四个 AI 同屏界面与添加平台菜单](assets/screenshots/panelize-cn-overview.png)
+
+*界面示例：DeepSeek、豆包、Kimi、千问同屏，可按需添加平台，并勾选本次参与发送的 AI。*
+
 ## 安装
 
 1. 从本仓库 [Releases](https://github.com/dstmg/Panelize-CN/releases) 下载安装 ZIP 并解压到固定目录。也可下载本仓库源码 ZIP 后解压。
